@@ -1,5 +1,5 @@
 name: 功能请求
-description: Suggest a new feature or improvement
+description: 提出一个新功能，或某功能改进
 labels: enhancement
 body:
   - type: checkboxes
