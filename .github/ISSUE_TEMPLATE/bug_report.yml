@@ -1,5 +1,5 @@
 name:  Bug反馈
-description: Report something that isn't working correctly
+description: 提bug尽量带上日志
 labels: bug
 body:
   - type: checkboxes
