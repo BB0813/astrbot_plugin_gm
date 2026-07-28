@@ -4,7 +4,7 @@ AstrBot QQ 群管插件
 
 ✨ 功能一览
 本插件为 AstrBot QQ 机器人提供完整的群组管理功能，通过 OneBot 协议实现与 QQ 平台交互。
-"shell
+" shell
 命令               权限            说明
 /禁言 @某人 [分钟数]  管理员
 "
