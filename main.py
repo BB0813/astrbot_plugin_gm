@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
 
 from astrbot.api import star, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
@@ -25,7 +24,7 @@ class GroupAdminPlugin(star.Star):
         return str(event.message_obj.sender.user_id) in self.plugin_admins
 
     @filter.command("设管")
-    async def set_plugin_admin_command(self, event: AstrMessageEvent, args: List[str]):
+    async def set_plugin_admin_command(self, event: AstrMessageEvent, args: list[str]):
         """添加插件管理员 (仅插件管理员或群主可用)"""
         if not event.message_obj.group_id:
             yield event.plain_result("此命令仅在群聊中可用")
@@ -59,7 +58,7 @@ class GroupAdminPlugin(star.Star):
         yield event.plain_result(f"已将qq号为{target_qq}的用户设为插件管理员。")
 
     @filter.command("取管")
-    async def remove_plugin_admin_command(self, event: AstrMessageEvent, args: List[str]):
+    async def remove_plugin_admin_command(self, event: AstrMessageEvent, args: list[str]):
         """移除插件管理员 (仅插件管理员或群主可用)"""
         if not event.message_obj.group_id:
             yield event.plain_result("此命令仅在群聊中可用")
@@ -93,7 +92,7 @@ class GroupAdminPlugin(star.Star):
 
     @filter.command("禁言")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def mute_command(self, event: AstrMessageEvent, args: List[str]):
+    async def mute_command(self, event: AstrMessageEvent, args: list[str]):
         """禁言指定群成员"""
         if not self._is_plugin_admin(event):
             yield event.plain_result("你没有权限使用此命令，需要先被设为插件管理员。使用 /设管 @某人 添加插件管理员。")
