@@ -97,13 +97,13 @@ class GroupAdminPlugin(star.Star):
         target_qq = at_segment.qq
         duration_minutes = 10  # 默认10分钟
         """
-	if args:
+        if args:
             try:
                 duration_minutes = int(args[0])
         """
-	"""
-	8-1-2026 Juruoya1,修改了禁言报错的问题
-	"""
+        """
+        8-1-2026 Juruoya1,修改了禁言报错的问题
+        """
         time_text = ''.join([str(s.text) for s in event.message_obj.message if hasattr(s, 'text')]).strip()
         if time_text:
             try:
