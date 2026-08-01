@@ -96,12 +96,22 @@ class GroupAdminPlugin(star.Star):
             return
         target_qq = at_segment.qq
         duration_minutes = 10  # 默认10分钟
-        if args:
+        """
+	if args:
             try:
                 duration_minutes = int(args[0])
+        """
+	"""
+	8-1-2026 Juruoya1,修改了禁言报错的问题
+	"""
+        time_text = ''.join([str(s.text) for s in event.message_obj.message if hasattr(s, 'text')]).strip()
+        if time_text:
+            try:
+                duration_minutes = int(time_text)
             except ValueError:
                 yield event.plain_result("时长格式错误: 请输入纯数字的分钟数\n例如: 1440 (代表1天)")
                 return
+        
         duration_seconds = duration_minutes * 60
         try:
             await self._mute_user(event.message_obj.group_id, target_qq, duration_seconds)
