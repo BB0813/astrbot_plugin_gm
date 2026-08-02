@@ -143,7 +143,7 @@ astrbot_plugin_gm/
 - 🐛 发现 Bug？请提交 [Issue](https://github.com/mjy1113451/astrbot_plugin_gm/issues)
 - 💡 有功能建议？请先提交 Issue 讨论，待 AI 审核确认后可提 PR
 - 🔧 修复难度低到中的 PR，会被优先合并
-
+- 作者的群1075920323
 ---
 
 > 本插件仅供学习与交流使用，请遵守 QQ / QQ 群的相关使用规范。
