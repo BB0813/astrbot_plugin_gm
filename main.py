@@ -876,8 +876,8 @@ class GroupAdminPlugin(Star):
                     await self._handle_group_request(event, flag, False, "触发违禁词")
                     yield event.plain_result(f"已拒绝 {user_id} 的加群申请（含违禁词）")
 
-    @filter.on_message_sent()
-    async def on_message_sent(self, event: AstrMessageEvent):
+    @filter.after_message_sent()
+    async def after_message_sent(self, event: AstrMessageEvent):
         """Bot 自身发言后：若命中关键词配置则自动撤回（#46）。"""
         raw = self._get_raw_message(event)
         if not raw:
