@@ -281,7 +281,7 @@ class GroupAdminPlugin(star.Star):
         except Exception as e:
             yield event.plain_result(f"取消管理员失败: {str(e)}")
 
-    @filter.command("设精华")
+    @filter.command("设精")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def set_essence_command(self, event: AstrMessageEvent, args: list[str]):
         """将消息设为精华消息"""
