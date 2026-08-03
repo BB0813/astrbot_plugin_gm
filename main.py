@@ -157,10 +157,10 @@ class GroupAdminPlugin(Star):
         return await self._execute_action(event, "set_essence", message_id=message_id)
 
     async def _mute_member(self, event: AstrMessageEvent, group_id: str, qq: str, duration: int):
-        return await self._execute_action(event, "mute", group_id=group_id, user_id=qq, duration=duration)
+        return await self._execute_action(event, "set_group_ban", group_id=group_id, user_id=qq, duration=duration)
 
     async def _unmute_member(self, event: AstrMessageEvent, group_id: str, qq: str):
-        return await self._execute_action(event, "unmute", group_id=group_id, user_id=qq)
+        return await self._execute_action(event, "set_group_ban", group_id=group_id, user_id=qq, duration=0)
 
     async def _kick_member(self, event: AstrMessageEvent, group_id: str, qq: str):
         return await self._execute_action(event, "kick", group_id=group_id, user_id=qq)
@@ -246,17 +246,17 @@ class GroupAdminPlugin(Star):
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
-            yield event.plain_result("只有插件管理员可执行此操作")
+        sender_id = str(raw.get("user_id"))
+        is_admin_user = self.is_plugin_admin(sender_id) or self._is_group_admin(raw)
+        if not is_admin_user:
+            yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
         group_id = str(raw.get("group_id"))
         if not title:
             yield event.plain_result("请提供群头衔内容")
             return
-        qq = self._parse_qq(qq or str(raw.get("user_id")))
-        if not qq:
-            yield event.plain_result("请指定要设置头衔的QQ号")
-            return
+        # 优先从At组件提取QQ，若无则用target参数，最后回退到发送者自身
+        qq = self._extract_at_qq(raw) or self._parse_qq(qq) or sender_id
         ok = await self._set_group_title(event, group_id, qq, title)
         yield event.plain_result("设置头衔成功" if ok else "设置头衔失败")
 
@@ -266,14 +266,14 @@ class GroupAdminPlugin(Star):
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
-            yield event.plain_result("只有插件管理员可执行此操作")
+        sender_id = str(raw.get("user_id"))
+        is_admin_user = self.is_plugin_admin(sender_id) or self._is_group_admin(raw)
+        if not is_admin_user:
+            yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
         group_id = str(raw.get("group_id"))
-        qq = self._parse_qq(target or str(raw.get("user_id")))
-        if not qq:
-            yield event.plain_result("请指定要取消头衔的QQ号")
-            return
+        # 优先从At组件提取QQ，若无则从target参数解析，最后回退到发送者自身
+        qq = self._extract_at_qq(raw) or self._parse_qq(target) or sender_id
         ok = await self._set_group_title(event, group_id, qq, "")
         yield event.plain_result("取消头衔成功" if ok else "取消头衔失败")
 
@@ -299,7 +299,7 @@ class GroupAdminPlugin(Star):
                 minutes = int(target_stripped)
             except ValueError:
                 pass
-        ok = await self._mute_member(event, group_id, qq, minutes)
+        ok = await self._mute_member(event, group_id, qq, minutes * 60)
         yield event.plain_result("禁言成功" if ok else "禁言失败")
 
     @filter.command("解禁", "解除禁言")
