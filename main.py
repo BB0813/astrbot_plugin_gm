@@ -1,7 +1,7 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.api.message_components import Plain, At, Image, Reply
+from astrbot.api.message_components import Plain, At
 
 try:
     from astrbot.api.message import MessageChain
@@ -13,12 +13,9 @@ except ImportError:
 
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 import re
 import time
-
-WHITESPACE = " \t\r\n\f\v"
 
 
 def _parse_qq_list(text: str) -> list:
@@ -137,18 +134,6 @@ class GroupAdminPlugin(Star):
 
     def _is_group_admin_or_owner(self, raw: dict) -> bool:
         return self._is_group_admin(raw) or self._is_group_owner(raw)
-
-    def is_group_admin(self, user_id: str, group_id: str, raw: dict) -> bool:
-        """判断是否为某群的有效管理员（插件管理员 / 全局插件管理员 / 群内角色管理员 / 群独立管理员配置）。"""
-        uid = str(user_id)
-        if self.is_plugin_admin(uid):
-            return True
-        if self._is_group_admin_or_owner(raw):
-            return True
-        group_admins = self.config.get("group_admins", {}).get(str(group_id), [])
-        if uid in [str(x) for x in group_admins]:
-            return True
-        return False
 
     def has_title_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
         uid = str(user_id)
@@ -301,14 +286,6 @@ class GroupAdminPlugin(Star):
         """修改群头像，file 可以是 URL 或本地路径或 base64。"""
         return await self._execute_action(event, "set_group_portrait",
                                           group_id=group_id, file=file)
-
-    async def _send_group_notice(self, event: AstrMessageEvent, group_id: str, content: str):
-        return await self._execute_action(event, "_send_group_notice",
-                                          group_id=group_id, content=content)
-
-    async def _delete_group_notice(self, event: AstrMessageEvent, group_id: str, notice_id: str):
-        return await self._execute_action(event, "_delete_group_notice",
-                                          group_id=group_id, notice_id=notice_id)
 
     async def _handle_group_request(self, event: AstrMessageEvent, flag: str, approve: bool, reason: str = ""):
         return await self._execute_action(event, "handle_group_request",
@@ -524,6 +501,9 @@ class GroupAdminPlugin(Star):
             return
         target_qq = self._extract_at_qq(raw) or self._parse_qq(target) or sender_id
         ok = await self._set_group_title(event, group_id, target_qq, "")
+        if not ok:
+            # 部分 OneBot 实现不接受空字符串，回退使用空格占位符
+            ok = await self._set_group_title(event, group_id, target_qq, " ")
         yield event.plain_result("取消头衔成功" if ok else "取消头衔失败")
 
     # #18: 别人昵称 - 设置他人的群昵称
