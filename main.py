@@ -256,13 +256,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("请提供群头衔内容")
             return
         # 优先从At组件提取QQ，若无则用target参数，最后回退到发送者自身
-        qq = self._extract_at_qq(raw) or self._parse_qq(qq)
-        if not qq or qq == sender_id:
-            # 操作对象为空或为自己时，作用于发送者自身（群管理员只能设置自己的头衔）
-            qq = sender_id
-        if not qq:
-            yield event.plain_result("请指定要设置头衔的QQ号")
-            return
+        qq = self._extract_at_qq(raw) or self._parse_qq(qq) or sender_id
         ok = await self._set_group_title(event, group_id, qq, title)
         yield event.plain_result("设置头衔成功" if ok else "设置头衔失败")
 
@@ -280,9 +274,6 @@ class GroupAdminPlugin(Star):
         group_id = str(raw.get("group_id"))
         # 优先从At组件提取QQ，若无则从target参数解析，最后回退到发送者自身
         qq = self._extract_at_qq(raw) or self._parse_qq(target) or sender_id
-        if not qq:
-            yield event.plain_result("请指定要取消头衔的QQ号")
-            return
         ok = await self._set_group_title(event, group_id, qq, "")
         yield event.plain_result("取消头衔成功" if ok else "取消头衔失败")
 
@@ -308,7 +299,7 @@ class GroupAdminPlugin(Star):
                 minutes = int(target_stripped)
             except ValueError:
                 pass
-        ok = await self._mute_member(event, group_id, qq, minutes)
+        ok = await self._mute_member(event, group_id, qq, minutes * 60)
         yield event.plain_result("禁言成功" if ok else "禁言失败")
 
     @filter.command("解禁", "解除禁言")
