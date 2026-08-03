@@ -1,423 +1,397 @@
-import asyncio
-from astrbot.api import star, logger
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import At, Plain, Reply
-from typing import Optional, Union, List, Dict, Any
+from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
+from astrbot.api.message_components import Plain, At
+# 导入 MessageChain 用于显式包装消息列表
+from astrbot.api.message import MessageChain
+import json
+import os
+from datetime import datetime
+from pathlib import Path
 
-class GroupAdminPlugin(star.Star):
-    """AstrBot 群管插件 - 提供完整的群组管理功能"""
-
-    def __init__(self, context: star.Context) -> None:
+@register(
+    "welcome_group",
+    "YourName",
+    "QQ群新人入群自动欢迎插件",
+    "2.4.0",
+    "https://github.com/mjy1113451/welcome_group"
+)
+class WelcomePlugin(Star):
+    def __init__(self, context: Context):
         super().__init__(context)
-        self.context = context
-
-    @filter.command("禁言")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def mute_command(self, event: AstrMessageEvent, args: List[str]):
-        """禁言指定群成员
-
-        用法: /禁言 @某人 分钟数
-        示例: /禁言 @张三 1440 (代表禁言1天)
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        # 解析@的目标
-        at_segment = None
-        for segment in event.message_obj.message:
-            if isinstance(segment, At):
-                at_segment = segment
-                break
-
-        if not at_segment:
-            yield event.plain_result("请使用 @ 提及要禁言的成员")
-            return
-
-        target_qq = at_segment.qq
-
-        # 解析时长（统一按分钟）
-        duration_minutes = 10  # 默认10分钟
-        if args:
+        # 初始化数据目录路径
+        try:
+            from astrbot.api.star import StarTools
+            self.data_dir = StarTools.get_data_dir() / "welcome_group"
+        except ImportError:
+            self.data_dir = Path(os.getcwd()) / "data" / "welcome_group"
+        
+        if not self.data_dir.exists():
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.config_path = self.data_dir / "config.json"
+        # 初始化配置文件
+        self.config = self.load_config()
+    
+    def _get_default_config(self) -> dict:
+        """获取默认配置结构"""
+        return {
+            "groups": {},
+            # 以下配置项请在 AstrBot 控制台或配置文件中修改
+            "global_enabled": False, 
+            "global_increase_message": "欢迎 {at} 加入本群！当前时间：{time}",
+            "global_leave_message": "{user_id} 离开了本群。",
+            "global_kick_message": "{user_id} 被移出了本群。"
+        }
+    
+    def load_config(self) -> dict:
+        """加载配置文件"""
+        default_config = self._get_default_config()
+        
+        if self.config_path.exists():
             try:
-                duration_minutes = int(args[0])
-            except ValueError:
-                yield event.plain_result("时长格式错误: 请输入纯数字的分钟数\n例如: 1440 (代表1天)")
-                return
-
-        duration_seconds = duration_minutes * 60
-
-        # 执行禁言
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                    # 合并配置，确保所有必需的键都存在
+                    for key, value in default_config.items():
+                        if key not in saved:
+                            saved[key] = value
+                    
+                    # 确保groups键存在
+                    if "groups" not in saved:
+                        saved["groups"] = {}
+                    
+                    return saved
+            except Exception as e:
+                logger.error(f"加载配置文件失败: {e}")
+                return default_config
+        
+        return default_config
+    
+    def save_config(self):
+        """保存配置到文件"""
         try:
-            await self._mute_user(event.message_obj.group_id, target_qq, duration_seconds)
-            yield event.plain_result(f"已禁言 @ qq={target_qq} {duration_minutes} 分钟")
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            yield event.plain_result(f"禁言失败: {str(e)}")
-
-    @filter.command("解禁")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def unmute_command(self, event: AstrMessageEvent, args: List[str]):
-        """解除禁言
-
-        用法: /解禁 @某人
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        # 解析@的目标
-        at_segment = None
-        for segment in event.message_obj.message:
-            if isinstance(segment, At):
-                at_segment = segment
-                break
-
-        if not at_segment:
-            yield event.plain_result("请使用 @ 提及要解禁的成员")
-            return
-
-        target_qq = at_segment.qq
-
-        # 执行解禁
+            logger.error(f"保存配置文件失败: {e}")
+    
+    def _ensure_group(self, group_id: str) -> dict:
+        """确保群组配置存在，如果不存在则创建默认配置"""
+        if group_id not in self.config["groups"]:
+            self.config["groups"][group_id] = {
+                "enabled": False,
+                "message": "",
+                "leave_enabled": False,
+                "leave_message": "",
+                "kick_enabled": False,
+                "kick_message": ""
+            }
+        return self.config["groups"][group_id]
+    
+    def _get_raw_message(self, event: AstrMessageEvent):
+        """获取原始消息对象"""
         try:
-            await self._unmute_user(event.message_obj.group_id, target_qq)
-            yield event.plain_result(f"已解禁 @ qq={target_qq}")
-        except Exception as e:
-            yield event.plain_result(f"解禁失败: {str(e)}")
-
-    @filter.command("踢人")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def kick_command(self, event: AstrMessageEvent, args: List[str]):
-        """踢出指定群成员
-
-        用法: /踢人 @某人 [拒绝加群]
-        示例: /踢人 @张三 false (不拒绝加群)
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        # 解析@的目标
-        at_segment = None
-        for segment in event.message_obj.message:
-            if isinstance(segment, At):
-                at_segment = segment
-                break
-
-        if not at_segment:
-            yield event.plain_result("请使用 @ 提及要踢出的成员")
-            return
-
-        target_qq = at_segment.qq
-
-        # 解析是否拒绝加群
-        reject_add_request = True  # 默认拒绝
-        if args and args[0].lower() in ('false', '0', 'no'):
-            reject_add_request = False
-
-        # 执行踢出
+            return event.message_obj.raw_message
+        except AttributeError:
+            return None
+    
+    def _parse_time(self, raw: dict) -> str:
+        """解析时间"""
         try:
-            await self._kick_user(event.message_obj.group_id, target_qq, reject_add_request)
-            yield event.plain_result(f"已踢出 @ qq={target_qq}" + (" (已拒绝加群)" if reject_add_request else " (允许再次加群)"))
-        except Exception as e:
-            yield event.plain_result(f"踢出失败: {str(e)}")
-
-    @filter.command("全员禁言")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def mute_all_command(self, event: AstrMessageEvent, args: List[str]):
-        """设置全员禁言状态
-
-        用法: /全员禁言 开启|关闭
-        示例: /全员禁言 开启
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        if not args:
-            yield event.plain_result("请指定操作: 开启 或 关闭\n用法: /全员禁言 开启|关闭")
-            return
-
-        action = args[0].lower()
-        if action not in ('开启', '关闭', 'on', 'off', 'true', 'false', '1', '0'):
-            yield event.plain_result("操作参数错误: 请使用 '开启' 或 '关闭'")
-            return
-
-        enable = action in ('开启', 'on', 'true', '1')
-
-        try:
-            await self._mute_all(event.message_obj.group_id, enable)
-            yield event.plain_result(f"已{'开启' if enable else '关闭'}全员禁言")
-        except Exception as e:
-            yield event.plain_result(f"设置失败: {str(e)}")
-
-    @filter.command("撤回")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def recall_command(self, event: AstrMessageEvent, args: List[str]):
-        """撤回指定消息
-
-        用法: /撤回 消息ID
-        示例: /撤回 123456
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        if not args:
-            yield event.plain_result("请提供要撤回的消息ID\n用法: /撤回 消息ID")
-            return
-
-        try:
-            message_id = int(args[0])
-        except ValueError:
-            yield event.plain_result("消息ID格式错误: 请输入纯数字")
-            return
-
-        try:
-            await self._recall_message(event.message_obj.group_id, message_id)
-            yield event.plain_result(f"已尝试撤回消息 {message_id}")
-        except Exception as e:
-            yield event.plain_result(f"撤回失败: {str(e)}")
-
-    @filter.command("设置管理")
-    @filter.permission_type(filter.PermissionType.OWNER)
-    async def set_admin_command(self, event: AstrMessageEvent, args: List[str]):
-        """设置群管理员
-
-        用法: /设置管理 @某人 设置/取消
-        示例: /设置管理 @张三 设置
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        # 解析@的目标
-        at_segment = None
-        for segment in event.message_obj.message:
-            if isinstance(segment, At):
-                at_segment = segment
-                break
-
-        if not at_segment:
-            yield event.plain_result("请使用 @ 提及要设置的成员")
-            return
-
-        target_qq = at_segment.qq
-
-        if not args:
-            yield event.plain_result("请指定操作: 设置 或 取消\n用法: /设置管理 @某人 设置|取消")
-            return
-
-        action = args[0].lower()
-        if action not in ('设置', '取消', 'set', 'unset', 'add', 'remove'):
-            yield event.plain_result("操作参数错误: 请使用 '设置' 或 '取消'")
-            return
-
-        set_admin = action in ('设置', 'set', 'add')
-
-        try:
-            await self._set_admin(event.message_obj.group_id, target_qq, set_admin)
-            yield event.plain_result(f"已{'设置' if set_admin else '取消'} @ qq={target_qq} 为管理员")
-        except Exception as e:
-            yield event.plain_result(f"设置失败: {str(e)}")
-
-    @filter.command("群信息")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def group_info_command(self, event: AstrMessageEvent, args: List[str]):
-        """获取群详细信息"""
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        try:
-            group_info = await self._get_group_info(event.message_obj.group_id)
-            info_str = f"群名称: {group_info.get('group_name', '未知')}\n"
-            info_str += f"群号: {group_info.get('group_id', '未知')}\n"
-            info_str += f"群主: {group_info.get('owner_id', '未知')}\n"
-            info_str += f"成员数: {group_info.get('member_count', '未知')}\n"
-            info_str += f"最大成员数: {group_info.get('max_member_count', '未知')}"
-            yield event.plain_result(info_str)
-        except Exception as e:
-            yield event.plain_result(f"获取群信息失败: {str(e)}")
-
-    @filter.command("成员信息")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def member_info_command(self, event: AstrMessageEvent, args: List[str]):
-        """获取指定成员信息
-
-        用法: /成员信息 @某人
-        """
-        if not event.message_obj.group_id:
-            yield event.plain_result("此命令仅在群聊中可用")
-            return
-
-        # 解析@的目标
-        at_segment = None
-        for segment in event.message_obj.message:
-            if isinstance(segment, At):
-                at_segment = segment
-                break
-
-        if not at_segment:
-            yield event.plain_result("请使用 @ 提及要查询的成员")
-            return
-
-        target_qq = at_segment.qq
-
-        try:
-            member_info = await self._get_member_info(event.message_obj.group_id, target_qq)
-            info_str = f"昵称: {member_info.get('nickname', '未知')}\n"
-            info_str += f"QQ号: {member_info.get('user_id', '未知')}\n"
-            info_str += f"群名片: {member_info.get('card', '未知')}\n"
-            info_str += f"群头衔: {member_info.get('title', '未知')}\n"
-            info_str += f"管理员: {'是' if member_info.get('role') == 'admin' else '否'}\n"
-            info_str += f"加群时间: {member_info.get('join_time', '未知')}\n"
-            info_str += f"最后发言: {member_info.get('last_sent_time', '未知')}"
-            yield event.plain_result(info_str)
-        except Exception as e:
-            yield event.plain_result(f"获取成员信息失败: {str(e)}")
-
-    @filter.command("退群")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def leave_group_command(self, event: AstrMessageEvent, args: List[str]):
-        """退出指定群聊
-
-        用法: /退群 [群号]
-        示例: /退群 123456789
-        """
-        # 如果提供了群号参数，则退出指定群，否则退出当前群
-        group_id = None
-        if args:
-            try:
-                group_id = int(args[0])
-            except ValueError:
-                yield event.plain_result("群号格式错误: 请输入纯数字")
-                return
-        elif event.message_obj.group_id:
-            group_id = event.message_obj.group_id
+            timestamp = raw.get("time")
+            if timestamp:
+                return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            pass
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def _build_onebot_message(self, processed: str, user_id):
+        """构建 OneBot 消息"""
+        if "{at}" in processed:
+            parts = processed.split("{at}")
+            message_list = []
+            for i, part in enumerate(parts):
+                if part:
+                    message_list.append(Plain(part))
+                if i < len(parts) - 1:
+                    message_list.append(At(qq=user_id))
+            return message_list
         else:
-            yield event.plain_result("此命令仅在群聊中可用，或需提供群号参数")
-            return
-
+            return [Plain(processed)]
+    
+    def _build_fallback_chain(self, processed: str, user_id):
+        """构建回退消息链"""
+        fallback = processed.replace("{at}", f"@{user_id}")
+        # 返回标准消息组件列表
+        return [Plain(fallback)]
+    
+    async def _send_group_msg(self, event: AstrMessageEvent, group_id: str, message_list):
+        """发送群消息"""
         try:
-            await self._leave_group(group_id)
-            yield event.plain_result(f"已退出群 {group_id}")
+            if hasattr(event, 'send'):
+                # 修复点：显式将消息列表包装为 MessageChain 对象
+                chain = MessageChain(message_list)
+                await event.send(chain)
+                return True
         except Exception as e:
-            yield event.plain_result(f"退群失败: {str(e)}")
-
-    @filter.command("加群")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def join_group_command(self, event: AstrMessageEvent, args: List[str]):
-        """添加机器人到指定群聊
-
-        用法: /加群 群号
-        示例: /加群 123456789
+            logger.error(f"发送消息失败: {e}")
+            return False
+    
+    # ==================== 事件监听 ====================
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_group_increase(self, event: AstrMessageEvent):
+        """处理新人入群事件"""
+        try:
+            raw = self._get_raw_message(event)
+            if not raw or not isinstance(raw, dict):
+                return
+            
+            if raw.get("post_type") != "notice" or raw.get("notice_type") != "group_increase":
+                return
+            
+            group_id = str(raw.get("group_id"))
+            user_id = raw.get("user_id")
+            self_id = raw.get("self_id")
+            
+            # 忽略机器人自己进群
+            if str(user_id) == str(self_id):
+                return
+            
+            group_config = self.config["groups"].get(group_id)
+            welcome_template = ""
+            
+            if not group_config:
+                # 如果群未配置，检查全局开关（此开关在配置文件中设置）
+                if self.config.get("global_enabled", False):
+                    logger.info(f"群 {group_id} 未配置，使用全局入群欢迎语")
+                    welcome_template = self.config.get("global_increase_message", "欢迎 {at} 加入本群！当前时间：{time}")
+                else:
+                    logger.info(f"群 {group_id} 未配置且全局模式未开启，跳过欢迎")
+                    return
+            else:
+                # 群已配置，检查群开关
+                if not group_config.get("enabled", False):
+                    return
+                
+                # 使用群独立配置，如果没填则回退到全局配置
+                welcome_template = group_config.get("message", self.config.get("global_increase_message", "欢迎 {at} 加入本群！当前时间：{time}"))
+            
+            # 发送消息
+            time_str = self._parse_time(raw)
+            processed = welcome_template.replace("{time}", time_str).replace("{user_id}", str(user_id))
+            message_list = self._build_onebot_message(processed, user_id)
+            success = await self._send_group_msg(event, group_id, message_list)
+            
+            if not success:
+                # 尝试发送回退消息
+                try:
+                    fallback_list = self._build_fallback_chain(processed, user_id)
+                    chain = MessageChain(fallback_list)
+                    if hasattr(event, 'send'):
+                        await event.send(chain)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"处理入群事件时出错: {e}")
+    
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_group_decrease(self, event: AstrMessageEvent):
+        """处理退群 / 被踢出群事件"""
+        try:
+            raw = self._get_raw_message(event)
+            if not raw or not isinstance(raw, dict):
+                return
+            
+            if raw.get("post_type") != "notice" or raw.get("notice_type") != "group_decrease":
+                return
+            
+            sub_type = raw.get("sub_type", "")
+            group_id = str(raw.get("group_id"))
+            user_id = raw.get("user_id")
+            self_id = raw.get("self_id")
+            
+            if sub_type == "kick_me" or str(user_id) == str(self_id):
+                return
+            
+            group_config = self.config["groups"].get(group_id, {})
+            template = ""
+            
+            default_leave = self.config.get("global_leave_message", "{user_id} 离开了本群。")
+            default_kick = self.config.get("global_kick_message", "{user_id} 被移出了本群。")
+            
+            if sub_type == "leave":
+                # 退群逻辑
+                if not group_config.get("leave_enabled", False):
+                    if not group_config:  # 群完全没配置的情况
+                        if self.config.get("global_enabled", False):
+                            template = default_leave
+                        else:
+                            return
+                    else:
+                        return
+                template = group_config.get("leave_message", default_leave)
+            
+            elif sub_type == "kick":
+                # 被踢逻辑
+                if not group_config.get("kick_enabled", False):
+                    if not group_config:
+                        if self.config.get("global_enabled", False):
+                            template = default_kick
+                        else:
+                            return
+                    else:
+                        return
+                template = group_config.get("kick_message", default_kick)
+            else:
+                return
+            
+            time_str = self._parse_time(raw)
+            processed = template.replace("{time}", time_str).replace("{user_id", str(user_id))
+            message_list = self._build_onebot_message(processed, user_id)
+            await self._send_group_msg(event, group_id, message_list)
+        except Exception as e:
+            logger.error(f"处理退群事件时出错: {e}")
+    
+    # ==================== 指令处理 ====================
+    @filter.command_group("welcome", "欢迎功能管理")
+    def welcome(self):
+        pass
+    
+    @welcome.command("set", "设置当前群欢迎语")
+    async def set_welcome(self, event: AstrMessageEvent, message: str = ""):
         """
-        if not args:
-            yield event.plain_result("请提供群号\n用法: /加群 群号")
+        设置当前群的入群欢迎语
+        不填内容则重置为全局欢迎语
+        """
+        if not event.message_obj.group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
             return
-
-        try:
-            group_id = int(args[0])
-        except ValueError:
-            yield event.plain_result("群号格式错误: 请输入纯数字")
+        
+        group_id = str(event.message_obj.group_id)
+        
+        # 确保群组配置存在
+        group_config = self._ensure_group(group_id)
+        
+        if message.strip():
+            # 设置自定义欢迎语
+            group_config["enabled"] = True
+            group_config["message"] = message.strip()
+            self.save_config()
+            yield event.plain_result(f"已设置群 {group_id} 的欢迎语：\n{message}")
+        else:
+            # 重置为全局欢迎语
+            group_config["enabled"] = False
+            group_config["message"] = ""
+            self.save_config()
+            yield event.plain_result(f"已重置群 {group_id} 的欢迎语为全局默认")
+    
+    @welcome.command("leave", "设置退群提示")
+    async def set_leave(self, event: AstrMessageEvent, message: str = ""):
+        """设置退群提示语"""
+        if not event.message_obj.group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
             return
+        
+        group_id = str(event.message_obj.group_id)
+        group_config = self._ensure_group(group_id)
+        
+        if message.strip():
+            group_config["leave_enabled"] = True
+            group_config["leave_message"] = message.strip()
+            self.save_config()
+            yield event.plain_result(f"已设置退群提示：{message}")
+        else:
+            group_config["leave_enabled"] = False
+            group_config["leave_message"] = ""
+            self.save_config()
+            yield event.plain_result("已禁用退群提示")
+    
+    @welcome.command("kick", "设置被踢提示")
+    async def set_kick(self, event: AstrMessageEvent, message: str = ""):
+        """设置被踢提示语"""
+        if not event.message_obj.group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        
+        group_id = str(event.message_obj.group_id)
+        group_config = self._ensure_group(group_id)
+        
+        if message.strip():
+            group_config["kick_enabled"] = True
+            group_config["kick_message"] = message.strip()
+            self.save_config()
+            yield event.plain_result(f"已设置被踢提示：{message}")
+        else:
+            group_config["kick_enabled"] = False
+            group_config["kick_message"] = ""
+            self.save_config()
+            yield event.plain_result("已禁用被踢提示")
 
-        try:
-            await self._join_group(group_id)
-            yield event.plain_result(f"已申请加入群 {group_id}")
-        except Exception as e:
-            yield event.plain_result(f"加群失败: {str(e)}")
+    @welcome.command("on", "开启欢迎功能")
+    async def enable_welcome(self, event: AstrMessageEvent):
+        """开启当前群的欢迎功能"""
+        if not event.message_obj.group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        
+        group_id = str(event.message_obj.group_id)
+        group_config = self._ensure_group(group_id)
+        
+        # 设置开启状态
+        group_config["enabled"] = True
+        self.save_config()
+        
+        yield event.plain_result(f"已开启群 {group_id} 的欢迎功能")
 
-    # 以下是内部实现方法
-
-    async def _mute_user(self, group_id: int, user_id: int, duration: int):
-        """内部方法: 禁言用户"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id,
-            "user_id": user_id,
-            "duration": duration
-        }
-        await api.call("set_group_ban", params)
-
-    async def _unmute_user(self, group_id: int, user_id: int):
-        """内部方法: 解除禁言"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id,
-            "user_id": user_id,
-            "duration": 0  # 设置为0即解禁
-        }
-        await api.call("set_group_ban", params)
-
-    async def _kick_user(self, group_id: int, user_id: int, reject_add_request: bool):
-        """内部方法: 踢出用户"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id,
-            "user_id": user_id,
-            "reject_add_request": reject_add_request
-        }
-        await api.call("set_group_kick", params)
-
-    async def _mute_all(self, group_id: int, enable: bool):
-        """内部方法: 设置全员禁言"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id,
-            "enable": enable
-        }
-        await api.call("set_group_whole_ban", params)
-
-    async def _recall_message(self, group_id: int, message_id: int):
-        """内部方法: 撤回群消息"""
-        api = self.context.get_api()
-        params = {  # 第365行修复: 添加8空格缩进
-            "group_id": group_id,
-            "message_id": message_id
-        }
-        await api.call("delete_msg", params)
-
-    async def _set_admin(self, group_id: int, user_id: int, enable: bool):
-        """内部方法: 设置群管理员"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id,
-            "user_id": user_id,
-            "enable": enable
-        }
-        await api.call("set_group_admin", params)
-
-    async def _get_group_info(self, group_id: int) -> Dict[str, Any]:
-        """内部方法: 获取群信息"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id
-        }
-        return await api.call("get_group_info", params)
-
-    async def _get_member_info(self, group_id: int, user_id: int) -> Dict[str, Any]:
-        """内部方法: 获取成员信息"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id,
-            "user_id": user_id
-        }
-        return await api.call("get_group_member_info", params)
-
-    async def _leave_group(self, group_id: int):
-        """内部方法: 退出群"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id
-        }
-        await api.call("set_group_leave", params)
-
-    async def _join_group(self, group_id: int):
-        """内部方法: 加入群"""
-        api = self.context.get_api()
-        params = {
-            "group_id": group_id
-        }
-        await api.call("set_group_add", params)
+    @welcome.command("off", "关闭欢迎功能")
+    async def disable_welcome(self, event: AstrMessageEvent):
+        """关闭当前群的欢迎功能"""
+        if not event.message_obj.group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        
+        group_id = str(event.message_obj.group_id)
+        group_config = self._ensure_group(group_id)
+        
+        # 设置关闭状态
+        group_config["enabled"] = False
+        self.save_config()
+        
+        yield event.plain_result(f"已关闭群 {group_id} 的欢迎功能")
+    
+    @welcome.command("status", "查看欢迎状态")
+    async def show_status(self, event: AstrMessageEvent):
+        """显示当前群的欢迎配置状态"""
+        if not event.message_obj.group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        
+        group_id = str(event.message_obj.group_id)
+        group_config = self._ensure_group(group_id)
+        
+        status_info = [
+            f"群 {group_id} 欢迎状态：",
+            f"欢迎功能: {'开启' if group_config.get('enabled', False) else '关闭'}",
+            f"欢迎语: {group_config.get('message', '使用全局默认')}",
+            f"退群提示: {'开启' if group_config.get('leave_enabled', False) else '关闭'}",
+            f"退群语: {group_config.get('leave_message', '使用全局默认')}",
+            f"被踢提示: {'开启' if group_config.get('kick_enabled', False) else '关闭'}",
+            f"被踢语: {group_config.get('kick_message', '使用全局默认')}",
+        ]
+        
+        yield event.plain_result("\n".join(status_info))
+    
+    @welcome.command("list", "列出所有群配置")
+    async def list_groups(self, event: AstrMessageEvent):
+        """列出所有已配置的群组"""
+        if not self.config["groups"]:
+            yield event.plain_result("当前没有任何群组配置")
+            return
+        
+        group_list = []
+        for group_id, config in self.config["groups"].items():
+            status = "开启" if config.get("enabled", False) else "关闭"
+            group_list.append(f"群 {group_id}: {status}")
+        
+        yield event.plain_result("已配置的群组列表：\n" + "\n".join(group_list))
