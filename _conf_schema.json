@@ -89,5 +89,17 @@
         "type": "int",
         "hint": "/排名 指令最多显示前N名。",
         "default": 10
+    },
+    "join_approve_keywords": {
+        "description": "加群请求验证消息命中后自动同意的关键词列表",
+        "type": "list",
+        "hint": "用户加群时填写的验证消息命中这些关键词时自动同意，并通过私聊通知 join_notify_admins。",
+        "default": []
+    },
+    "join_notify_admins": {
+        "description": "加群请求处理结果通知管理员QQ号列表",
+        "type": "list",
+        "hint": "加群请求自动同意/拒绝时会私聊通知到这里的QQ号。",
+        "default": []
     }
 }
