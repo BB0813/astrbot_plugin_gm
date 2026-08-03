@@ -82,6 +82,16 @@ class GroupAdminPlugin(Star):
         role = raw.get("sender", {}).get("role", "")
         return role in {"admin", "owner"}
 
+    def _get_raw_message(self, event: AstrMessageEvent):
+        """Robustly extract the raw message dict from the event."""
+        # Try event.message_obj.raw_message first (common pattern in plugins)
+        try:
+            return event.message_obj.raw_message
+        except Exception:
+            pass
+        # Fallback to event.raw_message if present
+        return getattr(event, "raw_message", None)
+
     def _parse_qq(self, text: str) -> str:
         match = re.search(r"(\d{5,12})", text)
         return match.group(1) if match else ""
@@ -149,14 +159,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("设管", "设置插件管理员")
     async def add_plugin_admin(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id) and not self._is_group_owner(raw.raw_message if hasattr(raw, "raw_message") else {}):
+        # only plugin admin or group owner can set plugin admins
+        if not self.is_plugin_admin(str(raw.get("user_id"))) and not self._is_group_owner(raw):
             yield event.plain_result("只有插件管理员或群主可执行此操作")
             return
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要设置为插件管理员的QQ号")
             return
@@ -169,14 +180,14 @@ class GroupAdminPlugin(Star):
 
     @admin.command("取管", "移除插件管理员")
     async def remove_plugin_admin(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id) and not self._is_group_owner(raw.raw_message if hasattr(raw, "raw_message") else {}):
+        if not self.is_plugin_admin(str(raw.get("user_id"))) and not self._is_group_owner(raw):
             yield event.plain_result("只有插件管理员或群主可执行此操作")
             return
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要移除的插件管理员QQ号")
             return
@@ -189,15 +200,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("设管理", "设置群管理员")
     async def set_group_admin_cmd(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id):
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        group_id = str(raw.get("group_id"))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要设置为群管理员的QQ号")
             return
@@ -206,15 +217,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("取消管理", "取消群管理员")
     async def unset_group_admin_cmd(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id):
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        group_id = str(raw.get("group_id"))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要取消群管理员的QQ号")
             return
@@ -223,18 +234,18 @@ class GroupAdminPlugin(Star):
 
     @admin.command("头衔", "设置群头衔")
     async def set_group_title_cmd(self, event: AstrMessageEvent, qq: str = "", title: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id):
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
+        group_id = str(raw.get("group_id"))
         if not title:
             yield event.plain_result("请提供群头衔内容")
             return
-        qq = self._parse_qq(qq or str(getattr(raw, "reply_id", "")))
+        qq = self._parse_qq(qq or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要设置头衔的QQ号")
             return
@@ -243,15 +254,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("取消头衔", "取消群头衔")
     async def unset_group_title_cmd(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id):
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        group_id = str(raw.get("group_id"))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要取消头衔的QQ号")
             return
@@ -260,15 +271,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("禁言", "禁言成员")
     async def mute_cmd(self, event: AstrMessageEvent, target: str = "", minutes: int = 10):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id) and not self._is_group_admin(raw.raw_message if hasattr(raw, "raw_message") else {}):
+        if not self.is_plugin_admin(str(raw.get("user_id"))) and not self._is_group_admin(raw):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        group_id = str(raw.get("group_id"))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要禁言的QQ号")
             return
@@ -277,15 +288,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("解禁", "解除禁言")
     async def unmute_cmd(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id) and not self._is_group_admin(raw.raw_message if hasattr(raw, "raw_message") else {}):
+        if not self.is_plugin_admin(str(raw.get("user_id"))) and not self._is_group_admin(raw):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        group_id = str(raw.get("group_id"))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要解禁的QQ号")
             return
@@ -294,15 +305,15 @@ class GroupAdminPlugin(Star):
 
     @admin.command("踢", "踢出群成员")
     async def kick_cmd(self, event: AstrMessageEvent, target: str = ""):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(raw.user_id):
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
-        group_id = str(raw.group_id)
-        qq = self._parse_qq(target or str(getattr(raw, "reply_id", "")))
+        group_id = str(raw.get("group_id"))
+        qq = self._parse_qq(target or str(raw.get("user_id")))
         if not qq:
             yield event.plain_result("请指定要踢出的QQ号")
             return
@@ -313,11 +324,11 @@ class GroupAdminPlugin(Star):
 
     @admin.command("撤回", "引用消息撤回")
     async def recall_cmd(self, event: AstrMessageEvent):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self._is_group_admin(raw.raw_message if hasattr(raw, "raw_message") else {}) and not self._is_group_owner(raw.raw_message if hasattr(raw, "raw_message") else {}):
+        if not self._is_group_admin(raw) and not self._is_group_owner(raw):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
         reply_id = self._get_reply_id(event)
@@ -331,11 +342,11 @@ class GroupAdminPlugin(Star):
 
     @admin.command("设精", "设置精华消息")
     async def essence_cmd(self, event: AstrMessageEvent):
-        raw = getattr(event, "message_obj", None)
-        if not raw or not getattr(raw, "group_id", None):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self._is_group_admin(raw.raw_message if hasattr(raw, "raw_message") else {}) and not self._is_group_owner(raw.raw_message if hasattr(raw, "raw_message") else {}):
+        if not self._is_group_admin(raw) and not self._is_group_owner(raw):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
         reply_id = self._get_reply_id(event)
