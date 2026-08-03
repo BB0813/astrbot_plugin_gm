@@ -14,7 +14,80 @@
     "plugin_admins": {
         "description": "插件管理员QQ号列表",
         "type": "list",
-        "hint": "这里的QQ号可以使用本插件的各项管理指令。可以使用 /设管 @某人 动态添加。",
+        "hint": "这里的QQ号可以使用本插件的所有管理指令。可以使用 /设管 QQ号 动态添加。",
         "default": []
+    },
+    "title_admins": {
+        "description": "头衔管理员QQ号列表（仅头衔相关指令）",
+        "type": "list",
+        "hint": "可以执行 /头衔 /取消头衔 指令的额外管理员（不影响插件管理员）。",
+        "default": []
+    },
+    "group_admin_admins": {
+        "description": "群管理员设置管理员QQ号列表（仅 /设管理 /取消管理）",
+        "type": "list",
+        "hint": "可以执行群管理员变更指令的额外管理员。",
+        "default": []
+    },
+    "kick_admins": {
+        "description": "踢人管理员QQ号列表（仅 /踢）",
+        "type": "list",
+        "hint": "可以执行 /踢 指令的额外管理员。",
+        "default": []
+    },
+    "group_admins": {
+        "description": "按群独立管理员映射 {群号: [QQ号列表]}",
+        "type": "object",
+        "hint": "通过 /添加插件管理 QQ号 指令动态管理。仅对本群生效。",
+        "default": {}
+    },
+    "auto_recall_keywords": {
+        "description": "Bot发言自动撤回关键词列表",
+        "type": "list",
+        "hint": "当Bot发言命中这些关键词时会自动撤回。",
+        "default": []
+    },
+    "auto_recall_enabled_groups": {
+        "description": "启用自动撤回的群ID列表",
+        "type": "list",
+        "hint": "留空则所有群都不启用自动撤回。",
+        "default": []
+    },
+    "violation_keywords": {
+        "description": "违规检测关键词列表",
+        "type": "list",
+        "hint": "群成员消息命中这些关键词时会触发违规处置。",
+        "default": []
+    },
+    "violation_action": {
+        "description": "违规处置动作",
+        "type": "string",
+        "hint": "none: 仅提示, mute: 禁言, recall: 撤回",
+        "options": ["none", "mute", "recall"],
+        "default": "none"
+    },
+    "violation_mute_minutes": {
+        "description": "违规禁言时长（分钟）",
+        "type": "int",
+        "hint": "违规处置为禁言时的时长。",
+        "default": 10
+    },
+    "violation_enabled_groups": {
+        "description": "启用违规检测的群ID列表",
+        "type": "list",
+        "hint": "留空则所有群都不启用违规检测。",
+        "default": []
+    },
+    "report_notify_admins": {
+        "description": "接收举报通知的插件管理员QQ号列表（私聊通知）",
+        "type": "list",
+        "hint": "/举报 指令触发的举报会私聊通知到这里的QQ号。",
+        "default": []
+    },
+    "rank_top_n": {
+        "description": "发言排名榜最多显示人数",
+        "type": "int",
+        "hint": "/排名 指令最多显示前N名。",
+        "default": 10
     }
 }
