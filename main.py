@@ -247,7 +247,7 @@ class WelcomePlugin(Star):
                 return
             
             time_str = self._parse_time(raw)
-            processed = template.replace("{time}", time_str).replace("{user_id", str(user_id))
+            processed = template.replace("{time}", time_str).replace("{user_id}", str(user_id))
             message_list = self._build_onebot_message(processed, user_id)
             await self._send_group_msg(event, group_id, message_list)
         except Exception as e:
