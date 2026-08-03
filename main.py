@@ -113,8 +113,8 @@ class GroupAdminPlugin(star.Star):
             yield event.plain_result(f"踢出失败: {str(e)}")
     
     @filter.command("头衔")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-async def set_title_command(self, event: AstrMessageEvent, args: List[str]):
+@filter.permission_type(filter.PermissionType.ADMIN)
+    async def set_title_command(self, event: AstrMessageEvent, args: List[str]):
         """设置群成员专属头衔
         
         用法: /头衔 @某人 头衔名称
