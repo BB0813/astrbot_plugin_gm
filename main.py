@@ -70,6 +70,7 @@ class GroupAdminPlugin(Star):
     def _get_default_config(self) -> dict:
         return {
             "show_recall_notice": True,
+            "mute_notice": True,
             "reject_re_add": False,
             "plugin_admins": [],
             "groups": {},
@@ -714,7 +715,8 @@ class GroupAdminPlugin(Star):
             except ValueError:
                 pass
         ok = await self._mute_member(event, group_id, qq, minutes * 60)
-        yield event.plain_result(f"禁言成功（{minutes}分钟）" if ok else "禁言失败")
+        if self._should_notify_mute(ok):
+            yield event.plain_result(f"禁言成功（{minutes}分钟）" if ok else "禁言失败")
 
     @filter.command("解禁", "解除禁言")
     async def unmute_cmd(self, event: AstrMessageEvent, target: str = ""):
@@ -732,7 +734,8 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("请指定要解禁的QQ号")
             return
         ok = await self._unmute_member(event, group_id, qq)
-        yield event.plain_result("解禁成功" if ok else "解禁失败")
+        if self._should_notify_mute(ok):
+            yield event.plain_result("解禁成功" if ok else "解禁失败")
 
     @filter.command("踢", "踢出群成员（支持批量+@）")
     async def kick_cmd(self, event: AstrMessageEvent, target: str = ""):
@@ -892,7 +895,8 @@ class GroupAdminPlugin(Star):
             return
         ok = await self._execute_action(event, "set_group_whole_ban",
                                         group_id=group_id, enable=True)
-        yield event.plain_result("已开启全群禁言" if ok else "开启失败")
+        if self._should_notify_mute(ok):
+            yield event.plain_result("已开启全群禁言" if ok else "开启失败")
 
     # #79: 解除宵禁 - 解除全体禁言
     @filter.command("解除宵禁", "关闭全群禁言")
@@ -908,7 +912,8 @@ class GroupAdminPlugin(Star):
             return
         ok = await self._execute_action(event, "set_group_whole_ban",
                                         group_id=group_id, enable=False)
-        yield event.plain_result("已解除全群禁言" if ok else "解除失败")
+        if self._should_notify_mute(ok):
+            yield event.plain_result("已解除全群禁言" if ok else "解除失败")
 
     # #75: 禁我 [分钟] - 任意成员禁言自己
     @filter.command("禁我", "禁言自己，格式：/禁我 [分钟]，默认10分钟")
@@ -921,7 +926,8 @@ class GroupAdminPlugin(Star):
         group_id = str(raw.get("group_id"))
         minutes = max(1, min(int(minutes), 43200))  # 限制 1 分钟 ~ 30 天
         ok = await self._mute_member(event, group_id, sender_id, minutes * 60)
-        yield event.plain_result(f"已禁言自己 {minutes} 分钟" if ok else "禁言失败")
+        if self._should_notify_mute(ok):
+            yield event.plain_result(f"已禁言自己 {minutes} 分钟" if ok else "禁言失败")
 
     # #76: 群昵称 新昵称 - 插件管理员修改任意成员昵称
     @filter.command("群昵称", "设置指定成员群昵称（仅插件管理员）")
@@ -1327,3 +1333,10 @@ class GroupAdminPlugin(Star):
             if isinstance(seg, dict) and seg.get("type") == "text":
                 parts.append(seg.get("data", {}).get("text", ""))
         return "".join(parts)
+
+    def _should_notify_mute(self, ok: bool) -> bool:
+        """判断禁言/解禁/宵禁/禁我 是否需要回复。
+        配置 mute_notice=False 时只回复失败，成功静默。"""
+        if not ok:
+            return True  # 失败总是提示
+        return bool(self.config.get("mute_notice", True))
