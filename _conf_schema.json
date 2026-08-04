@@ -42,6 +42,10 @@
     "group_admins": {
         "description": "按群独立管理员映射 {群号: [QQ号列表]}",
         "type": "object",
+        "items": {
+            "type": "list",
+            "items": {"type": "string"}
+        },
         "hint": "通过 /添加插件管理 QQ号 指令动态管理。仅对本群生效。",
         "default": {}
     },
@@ -112,5 +116,11 @@
         "items": {"type": "string"},
         "hint": "加群请求自动同意/拒绝时会私聊通知到这里的QQ号。",
         "default": []
+    },
+    "join_request_notify_in_group": {
+        "description": "加群申请在对应群内发送提醒",
+        "type": "bool",
+        "hint": "开启后，加群请求会在申请加入的群内发送提醒，管理员可引用回复\"同意/拒绝\"。",
+        "default": false
     }
 }
