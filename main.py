@@ -243,13 +243,21 @@ class GroupAdminPlugin(Star):
         """调用 OneBot API。
         优先尝试 event.bot.call_action（AstrBot 推荐方式），
         其次 fallback 到 self.context.{action} 和 event.{action}。
+        返回值：True/False。OneBot API 返回 None（无错误）也视为成功。
         """
+        # 参数转换：group_id / user_id / message_id 转为 int（OneBot 要求）
+        for k in ("group_id", "user_id", "message_id"):
+            if k in params and isinstance(params[k], str) and params[k].isdigit():
+                params[k] = int(params[k])
+
         bot = getattr(event, "bot", None)
         if bot is not None:
             call = getattr(bot, "call_action", None)
             if callable(call):
                 try:
-                    return await call(action, **params)
+                    result = await call(action, **params)
+                    # OneBot API 返回 None 也算成功（无 response 或 retcode 解析失败但 action 触发）
+                    return result is None or result is False or bool(result)
                 except Exception as e:
                     logger.error(f"bot.call_action({action}) 失败: {e}")
             api = getattr(bot, "api", None)
@@ -257,26 +265,50 @@ class GroupAdminPlugin(Star):
                 call = getattr(api, "call_action", None)
                 if callable(call):
                     try:
-                        return await call(action, **params)
+                        result = await call(action, **params)
+                        return result is None or result is False or bool(result)
                     except Exception as e:
                         logger.error(f"bot.api.call_action({action}) 失败: {e}")
         handler = getattr(self.context, action, None)
         if callable(handler):
             try:
-                return await handler(**params)
+                result = await handler(**params)
+                return result is None or bool(result)
             except Exception as e:
                 logger.error(f"调用 {action} 失败: {e}")
         if hasattr(event, action):
             handler = getattr(event, action)
             if callable(handler):
                 try:
-                    return await handler(**params)
+                    result = await handler(**params)
+                    return result is None or bool(result)
                 except Exception as e:
                     logger.error(f"调用 event.{action} 失败: {e}")
         return False
 
     def _get_reply_id(self, event: AstrMessageEvent):
-        return getattr(event.message_obj, "reply_id", None) or getattr(event.message_obj, "quote_id", None)
+        """提取被引用/回复的消息 ID。优先从 message_obj，回退 raw message 字段。"""
+        mo = getattr(event, "message_obj", None)
+        if mo:
+            for attr in ("reply_id", "quote_id"):
+                v = getattr(mo, attr, None)
+                if v:
+                    return str(v)
+        # 尝试从 raw message 的 segment 中找 Reply 类型
+        raw = self._get_raw_message(event)
+        if isinstance(raw, dict):
+            for seg in raw.get("message", []) or []:
+                if isinstance(seg, dict):
+                    t = seg.get("type")
+                    if t in ("reply", "quote"):
+                        data = seg.get("data", {})
+                        rid = data.get("id") or data.get("message_id")
+                        if rid:
+                            return str(rid)
+                    if t == "text" and isinstance(seg.get("data", {}).get("text", ""), str):
+                        # 部分 OneBot 引用消息嵌在 text 中
+                        pass
+        return None
 
     # ===================== OneBot API 封装 =====================
 
@@ -667,23 +699,48 @@ class GroupAdminPlugin(Star):
             await self._execute_action(event, "reject_add", group_id=group_id, user_id=qq)
         yield event.plain_result("踢出成功" if ok else "踢出失败")
 
-    @filter.command("撤回", "引用消息撤回")
-    async def recall_cmd(self, event: AstrMessageEvent):
+    @filter.command("撤回", "撤回消息（引用消息或 /撤回 N 撤回最近N条）")
+    async def recall_cmd(self, event: AstrMessageEvent, count: int = 0):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self._is_group_admin(raw) and not self._is_group_owner(raw):
+        if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
+
         reply_id = self._get_reply_id(event)
-        if not reply_id:
-            yield event.plain_result("请引用一条消息后使用该指令")
+        if reply_id:
+            ok = await self._recall_message(event, reply_id)
+            if ok and self.config.get("show_recall_notice", True):
+                await self._send(event, self._build_text("已撤回该消息"))
+            yield event.plain_result("撤回成功" if ok else "撤回失败")
             return
-        ok = await self._recall_message(event, reply_id)
-        if ok and self.config.get("show_recall_notice", True):
-            await self._send(event, self._build_text("已撤回该消息"))
-        yield event.plain_result("撤回成功" if ok else "撤回失败")
+
+        # /撤回 N 撤回最近 N 条（按 message_id 倒推）
+        if count > 0:
+            # 通过 get_group_msg_history 拉最近消息列表，逐条撤回
+            history = await self._execute_action(
+                event, "get_group_msg_history",
+                group_id=str(raw.get("group_id")), message_id=None,
+            )
+            msgs = []
+            if isinstance(history, dict):
+                msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+            recalled = 0
+            for m in msgs[:count]:
+                mid = m.get("message_id")
+                if mid and await self._recall_message(event, str(mid)):
+                    recalled += 1
+            if recalled:
+                if self.config.get("show_recall_notice", True):
+                    await self._send(event, self._build_text(f"已撤回 {recalled} 条消息"))
+                yield event.plain_result(f"撤回成功（{recalled} 条）")
+            else:
+                yield event.plain_result("撤回失败，未找到可撤回消息")
+            return
+
+        yield event.plain_result("请引用一条消息后使用该指令，或使用 /撤回 N 撤回最近 N 条")
 
     @filter.command("设精", "设置精华消息")
     async def essence_cmd(self, event: AstrMessageEvent):
@@ -719,6 +776,72 @@ class GroupAdminPlugin(Star):
             return
         ok = await self._set_group_avatar(event, group_id, image_url)
         yield event.plain_result("群头像已更新" if ok else "修改群头像失败")
+
+    # #79: 宵禁 - 全体禁言
+    @filter.command("宵禁", "开启全群禁言")
+    async def whole_ban_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        group_id = str(raw.get("group_id"))
+        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+            yield event.plain_result("只有群管理员或插件管理员可执行此操作")
+            return
+        ok = await self._execute_action(event, "set_group_whole_ban",
+                                        group_id=group_id, enable=True)
+        yield event.plain_result("已开启全群禁言" if ok else "开启失败")
+
+    # #79: 解除宵禁 - 解除全体禁言
+    @filter.command("解除宵禁", "关闭全群禁言")
+    async def unwhole_ban_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        group_id = str(raw.get("group_id"))
+        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+            yield event.plain_result("只有群管理员或插件管理员可执行此操作")
+            return
+        ok = await self._execute_action(event, "set_group_whole_ban",
+                                        group_id=group_id, enable=False)
+        yield event.plain_result("已解除全群禁言" if ok else "解除失败")
+
+    # #75: 禁我 [分钟] - 任意成员禁言自己
+    @filter.command("禁我", "禁言自己，格式：/禁我 [分钟]，默认10分钟")
+    async def mute_self_cmd(self, event: AstrMessageEvent, minutes: int = 10):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        group_id = str(raw.get("group_id"))
+        minutes = max(1, min(int(minutes), 43200))  # 限制 1 分钟 ~ 30 天
+        ok = await self._mute_member(event, group_id, sender_id, minutes * 60)
+        yield event.plain_result(f"已禁言自己 {minutes} 分钟" if ok else "禁言失败")
+
+    # #76: 群昵称 新昵称 - 插件管理员修改任意成员昵称
+    @filter.command("群昵称", "设置指定成员群昵称（仅插件管理员）")
+    async def set_member_card_cmd(self, event: AstrMessageEvent, target: str = "", card: str = ""):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        group_id = str(raw.get("group_id"))
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
+            yield event.plain_result("只有插件管理员可执行此操作")
+            return
+        qq = self._extract_at_qq(raw) or self._parse_qq(target)
+        if not qq:
+            yield event.plain_result("请通过 @某人 或提供QQ号")
+            return
+        if not card:
+            yield event.plain_result("请提供新昵称内容")
+            return
+        ok = await self._set_group_card(event, group_id, qq, card)
+        yield event.plain_result(f"已将 {qq} 群昵称设为 {card}" if ok else "设置群昵称失败")
 
     # #16: 群公告
     @filter.command("发群公告", "发送群公告")
