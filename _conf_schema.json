@@ -14,24 +14,28 @@
     "plugin_admins": {
         "description": "插件管理员QQ号列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "这里的QQ号可以使用本插件的所有管理指令。可以使用 /设管 QQ号 动态添加。",
         "default": []
     },
     "title_admins": {
         "description": "头衔管理员QQ号列表（仅头衔相关指令）",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "可以执行 /头衔 /取消头衔 指令的额外管理员（不影响插件管理员）。",
         "default": []
     },
     "group_admin_admins": {
         "description": "群管理员设置管理员QQ号列表（仅 /设管理 /取消管理）",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "可以执行群管理员变更指令的额外管理员。",
         "default": []
     },
     "kick_admins": {
         "description": "踢人管理员QQ号列表（仅 /踢）",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "可以执行 /踢 指令的额外管理员。",
         "default": []
     },
@@ -44,18 +48,21 @@
     "auto_recall_keywords": {
         "description": "Bot发言自动撤回关键词列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "当Bot发言命中这些关键词时会自动撤回。",
         "default": []
     },
     "auto_recall_enabled_groups": {
         "description": "启用自动撤回的群ID列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "留空则所有群都不启用自动撤回。",
         "default": []
     },
     "violation_keywords": {
         "description": "违规检测关键词列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "群成员消息命中这些关键词时会触发违规处置。",
         "default": []
     },
@@ -75,12 +82,14 @@
     "violation_enabled_groups": {
         "description": "启用违规检测的群ID列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "留空则所有群都不启用违规检测。",
         "default": []
     },
     "report_notify_admins": {
         "description": "接收举报通知的插件管理员QQ号列表（私聊通知）",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "/举报 指令触发的举报会私聊通知到这里的QQ号。",
         "default": []
     },
@@ -93,12 +102,14 @@
     "join_approve_keywords": {
         "description": "加群请求验证消息命中后自动同意的关键词列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "用户加群时填写的验证消息命中这些关键词时自动同意，并通过私聊通知 join_notify_admins。",
         "default": []
     },
     "join_notify_admins": {
         "description": "加群请求处理结果通知管理员QQ号列表",
         "type": "list",
+        "items": {"type": "string"},
         "hint": "加群请求自动同意/拒绝时会私聊通知到这里的QQ号。",
         "default": []
     }
