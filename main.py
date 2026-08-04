@@ -240,6 +240,26 @@ class GroupAdminPlugin(Star):
         return False
 
     async def _execute_action(self, event: AstrMessageEvent, action: str, **params):
+        """调用 OneBot API。
+        优先尝试 event.bot.call_action（AstrBot 推荐方式），
+        其次 fallback 到 self.context.{action} 和 event.{action}。
+        """
+        bot = getattr(event, "bot", None)
+        if bot is not None:
+            call = getattr(bot, "call_action", None)
+            if callable(call):
+                try:
+                    return await call(action, **params)
+                except Exception as e:
+                    logger.error(f"bot.call_action({action}) 失败: {e}")
+            api = getattr(bot, "api", None)
+            if api is not None:
+                call = getattr(api, "call_action", None)
+                if callable(call):
+                    try:
+                        return await call(action, **params)
+                    except Exception as e:
+                        logger.error(f"bot.api.call_action({action}) 失败: {e}")
         handler = getattr(self.context, action, None)
         if callable(handler):
             try:
@@ -267,6 +287,9 @@ class GroupAdminPlugin(Star):
         return await self._execute_action(event, "set_group_admin", group_id=group_id, user_id=qq, enable=enable)
 
     async def _set_group_title(self, event: AstrMessageEvent, group_id: str, qq: str, title: str):
+        """设置群头衔。OneBot v11 set_group_special_title 接口。
+        注意：不传 duration 参数（属于 set_group_ban 的参数，传了会导致 NapCatQQ 等静默失败）。
+        """
         return await self._execute_action(event, "set_group_special_title",
                                           group_id=group_id, user_id=qq, special_title=title)
 
@@ -542,9 +565,6 @@ class GroupAdminPlugin(Star):
             return
         target_qq = self._extract_at_qq(raw) or self._parse_qq(target) or sender_id
         ok = await self._set_group_title(event, group_id, target_qq, "")
-        if not ok:
-            # 部分 OneBot 实现不接受空字符串，回退使用空格占位符
-            ok = await self._set_group_title(event, group_id, target_qq, " ")
         yield event.plain_result("取消头衔成功" if ok else "取消头衔失败")
 
     # #18: 别人昵称 - 设置他人的群昵称
