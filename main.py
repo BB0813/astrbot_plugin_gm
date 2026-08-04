@@ -91,6 +91,9 @@ class GroupAdminPlugin(Star):
             "report_notify_admins": [],
             # 群公告与排名（#16, #29）
             "rank_top_n": 10,
+            # 加群请求关键词同意（#27 增强）
+            "join_approve_keywords": [],
+            "join_notify_admins": [],
         }
 
     def load_config(self) -> dict:
@@ -301,6 +304,11 @@ class GroupAdminPlugin(Star):
             except Exception as e:
                 logger.error(f"发送私聊失败: {e}")
         return False
+
+    async def _notify_admins(self, text: str):
+        """向 join_notify_admins 配置的管理员发送私聊通知。"""
+        for admin_id in self.config.get("join_notify_admins", []) or []:
+            await self._send_private_msg(str(admin_id), text)
 
     # ===================== 计数统计（#29） =====================
 
@@ -871,13 +879,33 @@ class GroupAdminPlugin(Star):
             comment = raw.get("comment", "")
             enabled_groups = self.config.get("violation_enabled_groups", [])
             violation_keywords = self.config.get("violation_keywords", [])
-            if enabled_groups and group_id in [str(x) for x in enabled_groups] and violation_keywords:
-                if any(kw in comment for kw in violation_keywords):
-                    await self._handle_group_request(event, flag, False, "触发违禁词")
-                    yield event.plain_result(f"已拒绝 {user_id} 的加群申请（含违禁词）")
+            join_approve_keywords = self.config.get("join_approve_keywords", [])
+            enabled = enabled_groups and group_id in [str(x) for x in enabled_groups]
 
-    @filter.on_message_sent()
-    async def on_message_sent(self, event: AstrMessageEvent):
+            # 命中违禁词：拒绝 + 通知管理员
+            if enabled and violation_keywords and any(kw in comment for kw in violation_keywords):
+                await self._handle_group_request(event, flag, False, "触发违禁词")
+                yield event.plain_result(f"已拒绝 {user_id} 的加群申请（含违禁词）")
+                await self._notify_admins(
+                    f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
+                    f"验证消息: {comment}\n"
+                    f"原因: 命中违禁词"
+                )
+                return
+
+            # 命中关键词：同意 + 通知管理员
+            if enabled and join_approve_keywords and any(kw in comment for kw in join_approve_keywords):
+                await self._handle_group_request(event, flag, True, "命中关键词自动同意")
+                yield event.plain_result(f"已同意 {user_id} 的加群申请（命中关键词）")
+                await self._notify_admins(
+                    f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
+                    f"验证消息: {comment}\n"
+                    f"原因: 命中关键词"
+                )
+                return
+
+    @filter.after_message_sent()
+    async def after_message_sent(self, event: AstrMessageEvent):
         """Bot 自身发言后：若命中关键词配置则自动撤回（#46）。"""
         raw = self._get_raw_message(event)
         if not raw:
