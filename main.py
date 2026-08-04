@@ -94,6 +94,9 @@ class GroupAdminPlugin(Star):
             # 加群请求关键词同意（#27 增强）
             "join_approve_keywords": [],
             "join_notify_admins": [],
+            # 加群申请群内提醒（#57）
+            "join_request_notify_in_group": False,
+            "pending_join_requests": {},
         }
 
     def load_config(self) -> dict:
@@ -304,6 +307,36 @@ class GroupAdminPlugin(Star):
             except Exception as e:
                 logger.error(f"发送私聊失败: {e}")
         return False
+
+    async def _send_group_text(self, event: AstrMessageEvent, group_id: str, text: str):
+        """向指定群发送纯文本消息，返回 message_id（用于后续引用回复关联）。"""
+        try:
+            if hasattr(self.context, "send_group_msg"):
+                # AstrBot 标准方法：send_group_msg(group_id=, message=)
+                result = await self.context.send_group_msg(group_id=int(group_id), message=text)
+                # 返回值可能直接是 message_id，也可能是含 message_id 的 dict
+                if isinstance(result, dict):
+                    return str(result.get("message_id") or result.get("data", {}).get("message_id", ""))
+                return str(result) if result else ""
+            # 回退：使用 _send 但拿不到 message_id
+            await self._send(event, [Plain(text)])
+        except Exception as e:
+            logger.error(f"发送群消息失败: {e}")
+        return ""
+
+    async def _get_user_nickname(self, event: AstrMessageEvent, user_id: str) -> str:
+        """获取用户昵称（通过 OneBot get_stranger_info API）。"""
+        try:
+            handler = getattr(self.context, "get_stranger_info", None)
+            if callable(handler):
+                info = await handler(user_id=int(user_id))
+                if isinstance(info, dict):
+                    return info.get("nickname") or info.get("data", {}).get("nickname", user_id)
+                if hasattr(info, "nickname"):
+                    return info.nickname
+        except Exception as e:
+            logger.error(f"获取昵称失败: {e}")
+        return user_id
 
     async def _notify_admins(self, text: str):
         """向 join_notify_admins 配置的管理员发送私聊通知。"""
@@ -856,6 +889,25 @@ class GroupAdminPlugin(Star):
                             await self._recall_message(event, str(msg_id))
                             yield event.plain_result("检测到违规内容，已撤回")
 
+        # 加群申请引用回复处理（#57）
+        reply_id = self._get_reply_id(event)
+        if reply_id and self._is_group_admin_or_owner(raw) or (self.is_plugin_admin(user_id)):
+            pending = self.config.get("pending_join_requests", {})
+            info = pending.get(str(reply_id))
+            if info:
+                msg_text = self._extract_text(raw)
+                if msg_text:
+                    approve = "同意" in msg_text
+                    deny = "拒绝" in msg_text
+                    if approve or deny:
+                        await self._handle_group_request(event, info["flag"], approve, "管理员审核")
+                        result = "同意" if approve else "拒绝"
+                        # 清理已处理的记录
+                        del pending[str(reply_id)]
+                        self.save_config()
+                        yield event.plain_result(f"已{result} {info['user_id']} 的加群申请")
+                        return
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_group_event(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
@@ -903,6 +955,27 @@ class GroupAdminPlugin(Star):
                     f"原因: 命中关键词"
                 )
                 return
+
+            # 群内提醒（#57）：发送申请消息到对应群聊，等待管理员引用回复同意/拒绝
+            if self.config.get("join_request_notify_in_group", False):
+                nickname = await self._get_user_nickname(event, user_id)
+                notify_text = (
+                    f"【有新人加群申请】\n"
+                    f"qq昵称：{nickname}\n"
+                    f"新人qq号：{user_id}\n"
+                    f"加群验证消息：{comment or '（无）'}\n"
+                    f"注：引用消息回复同意或拒绝"
+                )
+                # 暂存 flag 等待引用回复
+                sent_id = await self._send_group_text(event, group_id, notify_text)
+                if sent_id:
+                    pending = self.config.setdefault("pending_join_requests", {})
+                    pending[str(sent_id)] = {"flag": flag, "group_id": group_id, "user_id": user_id}
+                    self.save_config()
+                    await self._notify_admins(
+                        f"[加群请求] {user_id} 申请加入群 {group_id}\n"
+                        f"已在群内发送提醒，请管理员引用回复同意/拒绝"
+                    )
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent):
