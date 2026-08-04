@@ -891,7 +891,8 @@ class GroupAdminPlugin(Star):
 
         # 加群申请引用回复处理（#57）
         reply_id = self._get_reply_id(event)
-        if reply_id and self._is_group_admin_or_owner(raw) or (self.is_plugin_admin(user_id)):
+        has_permission = self._is_group_admin_or_owner(raw) or self.is_plugin_admin(user_id)
+        if reply_id and has_permission:
             pending = self.config.get("pending_join_requests", {})
             info = pending.get(str(reply_id))
             if info:

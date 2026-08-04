@@ -41,12 +41,9 @@
     },
     "group_admins": {
         "description": "按群独立管理员映射 {群号: [QQ号列表]}",
-        "type": "object",
-        "items": {
-            "type": "list",
-            "items": {"type": "string"}
-        },
-        "hint": "通过 /添加插件管理 QQ号 指令动态管理。仅对本群生效。",
+        "type": "dict",
+        "items": {},
+        "hint": "通过 /添加插件管理 QQ号 指令动态管理。仅对本群生效。键为群号，值为QQ号列表。",
         "default": {}
     },
     "auto_recall_keywords": {
