@@ -352,11 +352,15 @@ class GroupAdminPlugin(Star):
                                           group_id=group_id, user_id=qq, card=card)
 
     async def _set_essence(self, event: AstrMessageEvent, message_id: str, group_id: str = None):
-        """OneBot set_essence 需要 message_id 和 group_id。"""
+        """OneBot 标准 API 名为 set_essence_msg，部分实现也支持 set_essence。"""
         kwargs = {"message_id": message_id}
         if group_id is not None:
             kwargs["group_id"] = group_id
-        return await self._execute_action(event, "set_essence", **kwargs)
+        # 优先尝试标准名 set_essence_msg，再回退 set_essence
+        result = await self._execute_action(event, "set_essence_msg", **kwargs)
+        if not result:
+            result = await self._execute_action(event, "set_essence", **kwargs)
+        return result
 
     async def _mute_member(self, event: AstrMessageEvent, group_id: str, qq: str, duration_seconds: int):
         return await self._execute_action(event, "set_group_ban",
@@ -767,6 +771,10 @@ class GroupAdminPlugin(Star):
 
     @filter.command("撤回", "撤回消息（引用消息或 /撤回 N 撤回最近N条）")
     async def recall_cmd(self, event: AstrMessageEvent, count: int = 0):
+        try:
+            count = int(count) if count else 0
+        except (TypeError, ValueError):
+            count = 0
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
@@ -793,6 +801,14 @@ class GroupAdminPlugin(Star):
             msgs = []
             if isinstance(history, dict):
                 msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+            if not msgs:
+                # 多数 OneBot 实现不支持 get_group_msg_history（返回 None/空）
+                # 回退为只撤回本条触发指令
+                yield event.plain_result(
+                    "当前 OneBot 实现不支持 /撤回 N 批量撤回（缺少 get_group_msg_history API）。\n"
+                    "请使用引用消息撤回或 /撤回用户 @某人 数量。"
+                )
+                return
             recalled = 0
             for m in msgs[:count]:
                 mid = m.get("message_id")
@@ -822,7 +838,11 @@ class GroupAdminPlugin(Star):
         if not target_qq:
             yield event.plain_result("请 @要撤回消息的用户")
             return
-        count = max(1, min(int(count), 50))  # 上限 50
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 1
+        count = max(1, min(count, 50))  # 上限 50
         group_id = str(raw.get("group_id"))
         # 通过 get_group_msg_history 拉消息列表，按 user_id 过滤
         history = await self._execute_action(
@@ -832,6 +852,12 @@ class GroupAdminPlugin(Star):
         msgs = []
         if isinstance(history, dict):
             msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+        if not msgs:
+            yield event.plain_result(
+                "当前 OneBot 实现不支持 /撤回用户（缺少 get_group_msg_history API）。\n"
+                "请使用引用消息撤回或 /撤回 N。"
+            )
+            return
         candidates = [m for m in msgs if str(m.get("user_id")) == str(target_qq)]
         candidates = candidates[:count]
         recalled = 0
