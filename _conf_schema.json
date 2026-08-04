@@ -119,5 +119,12 @@
         "type": "bool",
         "hint": "开启后，加群请求会在申请加入的群内发送提醒，管理员可引用回复\"同意/拒绝\"。",
         "default": false
+    },
+    "group_overrides": {
+        "description": "按群独立配置覆盖：{群号: {key: value}}",
+        "type": "dict",
+        "items": {},
+        "hint": "通过 /设置群配置 key value 指令动态设置。键为群号，值为任意配置的覆盖。",
+        "default": {}
     }
 }

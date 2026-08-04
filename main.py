@@ -97,6 +97,8 @@ class GroupAdminPlugin(Star):
             # 加群申请群内提醒（#57）
             "join_request_notify_in_group": False,
             "pending_join_requests": {},
+            # #74 配置按群独立（保留全局默认值）
+            "group_overrides": {},
         }
 
     def load_config(self) -> dict:
@@ -129,6 +131,13 @@ class GroupAdminPlugin(Star):
 
     def is_plugin_admin(self, user_id: str) -> bool:
         return str(user_id) in [str(uid) for uid in self.config.get("plugin_admins", [])]
+
+    def get_group_setting(self, group_id: str, key: str, default=None):
+        """按群读取配置项，先查 group_overrides[群号][key]，否则用全局配置/默认值。"""
+        overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
+        if key in overrides:
+            return overrides[key]
+        return self.config.get(key, default)
 
     def _is_group_owner(self, raw: dict) -> bool:
         role = raw.get("sender", {}).get("role", "")
@@ -187,7 +196,7 @@ class GroupAdminPlugin(Star):
         return nums[0] if nums else ""
 
     def _extract_at_qq(self, raw: dict) -> str:
-        """Extract QQ number from At components in the raw message."""
+        """Extract first QQ number from At components in the raw message."""
         if not raw:
             return ""
         for seg in raw.get("message", []):
@@ -196,6 +205,18 @@ class GroupAdminPlugin(Star):
                 if qq:
                     return qq
         return ""
+
+    def _extract_at_qqs(self, raw: dict) -> list:
+        """Extract all QQ numbers from At components in the raw message."""
+        if not raw:
+            return []
+        qqs = []
+        for seg in raw.get("message", []):
+            if isinstance(seg, dict) and seg.get("type") == "at":
+                qq = str(seg.get("data", {}).get("qq", ""))
+                if qq and qq not in qqs:
+                    qqs.append(qq)
+        return qqs
 
     def _extract_image_url(self, event: AstrMessageEvent) -> str:
         """从 event 的消息链中提取第一张图片的 URL。"""
@@ -329,8 +350,12 @@ class GroupAdminPlugin(Star):
         return await self._execute_action(event, "set_group_card",
                                           group_id=group_id, user_id=qq, card=card)
 
-    async def _set_essence(self, event: AstrMessageEvent, message_id: str):
-        return await self._execute_action(event, "set_essence", message_id=message_id)
+    async def _set_essence(self, event: AstrMessageEvent, message_id: str, group_id: str = None):
+        """OneBot set_essence 需要 message_id 和 group_id。"""
+        kwargs = {"message_id": message_id}
+        if group_id is not None:
+            kwargs["group_id"] = group_id
+        return await self._execute_action(event, "set_essence", **kwargs)
 
     async def _mute_member(self, event: AstrMessageEvent, group_id: str, qq: str, duration_seconds: int):
         return await self._execute_action(event, "set_group_ban",
@@ -456,10 +481,10 @@ class GroupAdminPlugin(Star):
         if not self.is_plugin_admin(str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
-        qq_list = _parse_qq_list(target)
+        qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
         qq_list = list({str(x) for x in qq_list if x})
         if not qq_list:
-            yield event.plain_result("请提供QQ号，例如 /取管 123456")
+            yield event.plain_result("请通过 @某人 或QQ号指定，例如 /取管 @某人")
             return
         removed = []
         for qq in qq_list:
@@ -529,7 +554,7 @@ class GroupAdminPlugin(Star):
         else:
             yield event.plain_result("所列QQ号均非本群管理员")
 
-    @filter.command("设管理", "设置群管理员")
+    @filter.command("设管理", "设置群管理员（支持批量+@）")
     async def set_group_admin_cmd(self, event: AstrMessageEvent, target: str = ""):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -539,14 +564,22 @@ class GroupAdminPlugin(Star):
         if not self.has_group_admin_rights(str(raw.get("user_id")), group_id, raw):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        qq = self._extract_at_qq(raw) or self._parse_qq(target)
-        if not qq:
-            yield event.plain_result("请指定要设置为群管理员的QQ号")
+        qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
+        if not qq_list:
+            yield event.plain_result("请通过 @某人 或QQ号指定目标")
             return
-        ok = await self._set_group_admin(event, group_id, qq, True)
-        yield event.plain_result("设置群管理成功" if ok else "设置群管理失败")
+        results = []
+        for qq in qq_list:
+            ok = await self._set_group_admin(event, group_id, qq, True)
+            results.append((qq, ok))
+        ok_list = [q for q, ok in results if ok]
+        bad_list = [q for q, ok in results if not ok]
+        msg = f"设置群管理成功: {', '.join(ok_list)}" if ok_list else "设置群管理全部失败"
+        if bad_list:
+            msg += f"\n失败: {', '.join(bad_list)}"
+        yield event.plain_result(msg)
 
-    @filter.command("取消管理", "取消群管理员")
+    @filter.command("取消管理", "取消群管理员（支持批量+@）")
     async def unset_group_admin_cmd(self, event: AstrMessageEvent, target: str = ""):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -556,15 +589,23 @@ class GroupAdminPlugin(Star):
         if not self.has_group_admin_rights(str(raw.get("user_id")), group_id, raw):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        qq = self._extract_at_qq(raw) or self._parse_qq(target)
-        if not qq:
-            yield event.plain_result("请指定要取消群管理员的QQ号")
+        qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
+        if not qq_list:
+            yield event.plain_result("请通过 @某人 或QQ号指定目标")
             return
-        ok = await self._set_group_admin(event, group_id, qq, False)
-        yield event.plain_result("取消成功" if ok else "取消失败")
+        results = []
+        for qq in qq_list:
+            ok = await self._set_group_admin(event, group_id, qq, False)
+            results.append((qq, ok))
+        ok_list = [q for q, ok in results if ok]
+        bad_list = [q for q, ok in results if not ok]
+        msg = f"取消群管理成功: {', '.join(ok_list)}" if ok_list else "取消群管理全部失败"
+        if bad_list:
+            msg += f"\n失败: {', '.join(bad_list)}"
+        yield event.plain_result(msg)
 
-    @filter.command("头衔", "设置群头衔")
-    async def set_group_title_cmd(self, event: AstrMessageEvent, qq: str = "", title: str = ""):
+    @filter.command("头衔", "设置群头衔（@某人 头衔内容）")
+    async def set_group_title_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
@@ -574,13 +615,21 @@ class GroupAdminPlugin(Star):
         if not self.has_title_admin_rights(sender_id, group_id, raw):
             yield event.plain_result("只有插件管理员、头衔管理员或群管理员可执行此操作")
             return
+        target_qq = self._extract_at_qq(raw)
+        if not target_qq:
+            target_qq = sender_id  # 操作对象为空时对自身（允许群管理员自设头衔）
+        # 从 raw 消息提取所有 text 拼接，去掉命令前缀，得到完整头衔
+        title = self._extract_text(raw).strip()
+        for prefix in ("/头衔", "头衔"):
+            if title.startswith(prefix):
+                title = title[len(prefix):].lstrip()
+                break
+        # 去掉开头的 @ 提及占位（如果 AstrBot 在 text 中保留了 @xxx）
+        import re as _re
+        title = _re.sub(r"^@[\w（）()\d]+\s*", "", title)
         if not title:
             yield event.plain_result("请提供群头衔内容")
             return
-        target_qq = self._extract_at_qq(raw) or self._parse_qq(qq)
-        if not target_qq:
-            # 操作对象为空时，对发送者自身设置（允许群管理员自设头衔）
-            target_qq = sender_id
         ok = await self._set_group_title(event, group_id, target_qq, title)
         yield event.plain_result("设置头衔成功" if ok else "设置头衔失败")
 
@@ -600,8 +649,8 @@ class GroupAdminPlugin(Star):
         yield event.plain_result("取消头衔成功" if ok else "取消头衔失败")
 
     # #18: 别人昵称 - 设置他人的群昵称
-    @filter.command("别人昵称", "设置他人群昵称（需要引用消息）")
-    async def set_other_card_cmd(self, event: AstrMessageEvent, card: str = ""):
+    @filter.command("别人昵称", "设置他人群昵称（需要 @某人 + 新昵称）")
+    async def set_other_card_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
@@ -611,11 +660,17 @@ class GroupAdminPlugin(Star):
         if not self.has_group_admin_rights(sender_id, group_id, raw):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        reply_id = self._get_reply_id(event)
         target_qq = self._extract_at_qq(raw)
         if not target_qq:
-            yield event.plain_result("请通过 @某人 或引用该用户的消息来指定对象")
+            yield event.plain_result("请通过 @某人 来指定对象")
             return
+        # 从原始消息提取所有 text 段拼接为 card（避免被 @ 组件挤掉）
+        card = self._extract_text(raw).strip()
+        # 去掉开头的 /别人昵称 命令名（如果存在）
+        for prefix in ("/别人昵称", "别人昵称"):
+            if card.startswith(prefix):
+                card = card[len(prefix):].lstrip()
+                break
         if not card:
             yield event.plain_result("请提供新昵称内容")
             return
@@ -679,7 +734,7 @@ class GroupAdminPlugin(Star):
         ok = await self._unmute_member(event, group_id, qq)
         yield event.plain_result("解禁成功" if ok else "解禁失败")
 
-    @filter.command("踢", "踢出群成员")
+    @filter.command("踢", "踢出群成员（支持批量+@）")
     async def kick_cmd(self, event: AstrMessageEvent, target: str = ""):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -690,14 +745,22 @@ class GroupAdminPlugin(Star):
         if not self.has_kick_admin_rights(sender_id, group_id, raw):
             yield event.plain_result("只有插件管理员、踢人管理员或群管理员可执行此操作")
             return
-        qq = self._extract_at_qq(raw) or self._parse_qq(target)
-        if not qq:
-            yield event.plain_result("请指定要踢出的QQ号")
+        qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
+        if not qq_list:
+            yield event.plain_result("请通过 @某人 或QQ号指定目标")
             return
-        ok = await self._kick_member(event, group_id, qq)
-        if ok and self.config.get("reject_re_add", False):
-            await self._execute_action(event, "reject_add", group_id=group_id, user_id=qq)
-        yield event.plain_result("踢出成功" if ok else "踢出失败")
+        results = []
+        for qq in qq_list:
+            ok = await self._kick_member(event, group_id, qq)
+            if ok and self.config.get("reject_re_add", False):
+                await self._execute_action(event, "reject_add", group_id=group_id, user_id=qq)
+            results.append((qq, ok))
+        ok_list = [q for q, ok in results if ok]
+        bad_list = [q for q, ok in results if not ok]
+        msg = f"踢出成功: {', '.join(ok_list)}" if ok_list else "踢出全部失败"
+        if bad_list:
+            msg += f"\n失败: {', '.join(bad_list)}"
+        yield event.plain_result(msg)
 
     @filter.command("撤回", "撤回消息（引用消息或 /撤回 N 撤回最近N条）")
     async def recall_cmd(self, event: AstrMessageEvent, count: int = 0):
@@ -742,6 +805,44 @@ class GroupAdminPlugin(Star):
 
         yield event.plain_result("请引用一条消息后使用该指令，或使用 /撤回 N 撤回最近 N 条")
 
+    # #80: 撤回 @用户 数量 - 撤回指定用户最近 N 条
+    @filter.command("撤回用户", "撤回 @用户 最近N条消息（仅群管理员/插件管理员）")
+    async def recall_user_cmd(self, event: AstrMessageEvent, count: int = 1):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        target_qq = self._extract_at_qq(raw)
+        if not target_qq:
+            yield event.plain_result("请 @要撤回消息的用户")
+            return
+        count = max(1, min(int(count), 50))  # 上限 50
+        group_id = str(raw.get("group_id"))
+        # 通过 get_group_msg_history 拉消息列表，按 user_id 过滤
+        history = await self._execute_action(
+            event, "get_group_msg_history",
+            group_id=group_id, message_id=None,
+        )
+        msgs = []
+        if isinstance(history, dict):
+            msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+        candidates = [m for m in msgs if str(m.get("user_id")) == str(target_qq)]
+        candidates = candidates[:count]
+        recalled = 0
+        for m in candidates:
+            mid = m.get("message_id")
+            if mid and await self._recall_message(event, str(mid)):
+                recalled += 1
+        if recalled:
+            if self.config.get("show_recall_notice", True):
+                await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息"))
+            yield event.plain_result(f"撤回成功（{recalled} 条）")
+        else:
+            yield event.plain_result("撤回失败，未找到该用户的消息")
+
     @filter.command("设精", "设置精华消息")
     async def essence_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
@@ -755,7 +856,7 @@ class GroupAdminPlugin(Star):
         if not reply_id:
             yield event.plain_result("请引用一条消息后使用该指令")
             return
-        ok = await self._set_essence(event, reply_id)
+        ok = await self._set_essence(event, reply_id, group_id=str(raw.get("group_id")))
         yield event.plain_result("设精成功" if ok else "设精失败")
 
     # #24: 改群头像
@@ -978,6 +1079,80 @@ class GroupAdminPlugin(Star):
         yield event.plain_result("已提交举报，管理员会尽快处理")
 
     # ===================== 状态查看 =====================
+
+    # #74: 设置群配置（仅插件管理员）
+    @filter.command("设置群配置", "为本群覆盖插件配置项：/设置群配置 <key> <value>")
+    async def set_group_config_cmd(self, event: AstrMessageEvent, key: str = "", value: str = ""):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        group_id = str(raw.get("group_id"))
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
+            yield event.plain_result("只有插件管理员可执行此操作")
+            return
+        if not key:
+            yield event.plain_result(
+                "用法：/设置群配置 <key> <value>\n"
+                "支持 key: show_recall_notice, reject_re_add, rank_top_n, "
+                "violation_action, violation_mute_minutes, join_approve_keywords, "
+                "join_request_notify_in_group"
+            )
+            return
+        # 类型转换
+        parsed_value: object = value
+        if value.lower() in ("true", "false"):
+            parsed_value = (value.lower() == "true")
+        elif value.isdigit():
+            parsed_value = int(value)
+        elif value.startswith("[") and value.endswith("]"):
+            try:
+                parsed_value = json.loads(value)
+            except Exception:
+                parsed_value = [v.strip() for v in value.strip("[]").split(",") if v.strip()]
+        overrides = self.config.setdefault("group_overrides", {})
+        gconf = overrides.setdefault(group_id, {})
+        gconf[key] = parsed_value
+        self.save_config()
+        yield event.plain_result(f"已为本群设置 {key} = {parsed_value}")
+
+    @filter.command("查看群配置", "查看本群生效的配置覆盖")
+    async def view_group_config_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        group_id = str(raw.get("group_id"))
+        gconf = self.config.get("group_overrides", {}).get(group_id, {})
+        if not gconf:
+            yield event.plain_result("本群未设置任何覆盖（全部使用全局默认）")
+            return
+        lines = [f"{k}: {v}" for k, v in gconf.items()]
+        yield event.plain_result(f"本群覆盖配置：\n" + "\n".join(lines))
+
+    @filter.command("清除群配置", "清除本群所有覆盖")
+    async def clear_group_config_cmd(self, event: AstrMessageEvent, key: str = ""):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        if not self.is_plugin_admin(str(raw.get("user_id"))):
+            yield event.plain_result("只有插件管理员可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        gconf = self.config.get("group_overrides", {}).get(group_id, {})
+        if key:
+            if key not in gconf:
+                yield event.plain_result(f"本群未设置 {key}")
+                return
+            del gconf[key]
+            self.save_config()
+            yield event.plain_result(f"已清除本群 {key} 覆盖")
+        else:
+            if group_id in self.config.get("group_overrides", {}):
+                del self.config["group_overrides"][group_id]
+                self.save_config()
+            yield event.plain_result("已清除本群所有覆盖")
 
     @filter.command("status", "查看插件配置")
     async def status_cmd(self, event: AstrMessageEvent):
