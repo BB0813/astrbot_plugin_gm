@@ -5,6 +5,12 @@
         "hint": "开启后，Bot 执行撤回操作后会在群里发送一条\"已撤回该消息\"的提示。",
         "default": true
     },
+    "mute_notice": {
+        "description": "禁言/解禁后是否回复结果",
+        "type": "bool",
+        "hint": "关闭后，禁言/解禁成功时不回复\"禁言成功\"等提示（失败仍会提示）。",
+        "default": true
+    },
     "reject_re_add": {
         "description": "踢人后拒绝再次加群",
         "type": "bool",
