@@ -24,34 +24,6 @@
         "hint": "这里的QQ号可以使用本插件的所有管理指令。可以使用 /设管 QQ号 动态添加。",
         "default": []
     },
-    "title_admins": {
-        "description": "头衔管理员QQ号列表（仅头衔相关指令）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "可以执行 /头衔 /取消头衔 指令的额外管理员（不影响插件管理员）。",
-        "default": []
-    },
-    "group_admin_admins": {
-        "description": "群管理员设置管理员QQ号列表（仅 /设管理 /取消管理）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "可以执行群管理员变更指令的额外管理员。",
-        "default": []
-    },
-    "kick_admins": {
-        "description": "踢人管理员QQ号列表（仅 /踢）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "可以执行 /踢 指令的额外管理员。",
-        "default": []
-    },
-    "group_admins": {
-        "description": "按群独立管理员映射 {群号: [QQ号列表]}",
-        "type": "dict",
-        "items": {},
-        "hint": "通过 /添加插件管理 QQ号 指令动态管理。仅对本群生效。键为群号，值为QQ号列表。",
-        "default": {}
-    },
     "auto_recall_keywords": {
         "description": "Bot发言自动撤回关键词列表",
         "type": "list",
@@ -106,12 +78,6 @@
         "hint": "/排名 指令最多显示前N名。",
         "default": 10
     },
-    "mute_kick_threshold": {
-        "description": "禁言次数达到阈值后自动踢出",
-        "type": "int",
-        "hint": "同一群成员被Bot/群管禁言累计达到该次数后自动踢出。填0或留空表示关闭。",
-        "default": 0
-    },
     "join_approve_keywords": {
         "description": "加群请求验证消息命中后自动同意的关键词列表",
         "type": "list",
@@ -136,7 +102,7 @@
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
         "items": {},
-        "hint": "通过 /设置群配置 key value 指令动态设置。键为群号，值为任意配置的覆盖。",
+        "hint": "按群覆盖配置。常用 key：title_admins/group_admin_admins/kick_admins（专项权限列表）、mute_kick_threshold（禁言阈值）、show_recall_notice、reject_re_add、rank_top_n、violation_*、join_* 等。也可在群内用 /设置群配置 key value 动态设置。",
         "default": {}
     }
 }
