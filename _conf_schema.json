@@ -106,6 +106,12 @@
         "hint": "/排名 指令最多显示前N名。",
         "default": 10
     },
+    "mute_kick_threshold": {
+        "description": "禁言次数达到阈值后自动踢出",
+        "type": "int",
+        "hint": "同一群成员被Bot/群管禁言累计达到该次数后自动踢出。填0或留空表示关闭。",
+        "default": 0
+    },
     "join_approve_keywords": {
         "description": "加群请求验证消息命中后自动同意的关键词列表",
         "type": "list",

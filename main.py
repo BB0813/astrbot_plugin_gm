@@ -92,6 +92,8 @@ class GroupAdminPlugin(Star):
             "report_notify_admins": [],
             # 群公告与排名（#16, #29）
             "rank_top_n": 10,
+            # 禁言次数达到阈值后自动踢出（#103），0 表示关闭
+            "mute_kick_threshold": 0,
             # 加群请求关键词同意（#27 增强）
             "join_approve_keywords": [],
             "join_notify_admins": [],
@@ -155,7 +157,7 @@ class GroupAdminPlugin(Star):
         uid = str(user_id)
         if self.is_plugin_admin(uid):
             return True
-        title_admins = [str(x) for x in self.config.get("title_admins", [])]
+        title_admins = [str(x) for x in self.get_group_setting(group_id, "title_admins", [])]
         if uid in title_admins:
             return True
         if self._is_group_admin_or_owner(raw):
@@ -166,7 +168,7 @@ class GroupAdminPlugin(Star):
         uid = str(user_id)
         if self.is_plugin_admin(uid):
             return True
-        kick_admins = [str(x) for x in self.config.get("kick_admins", [])]
+        kick_admins = [str(x) for x in self.get_group_setting(group_id, "kick_admins", [])]
         if uid in kick_admins:
             return True
         if self._is_group_admin_or_owner(raw):
@@ -177,7 +179,7 @@ class GroupAdminPlugin(Star):
         uid = str(user_id)
         if self.is_plugin_admin(uid):
             return True
-        ga_admins = [str(x) for x in self.config.get("group_admin_admins", [])]
+        ga_admins = [str(x) for x in self.get_group_setting(group_id, "group_admin_admins", [])]
         if uid in ga_admins:
             return True
         if self._is_group_admin_or_owner(raw):
@@ -279,7 +281,7 @@ class GroupAdminPlugin(Star):
                 try:
                     result = await call(action, **params)
                     # OneBot API 返回 None 也算成功（无 response 或 retcode 解析失败但 action 触发）
-                    return result is None or result is False or bool(result)
+                    return result is None or bool(result)
                 except Exception as e:
                     logger.error(f"bot.call_action({action}) 失败: {e}")
             api = getattr(bot, "api", None)
@@ -288,7 +290,7 @@ class GroupAdminPlugin(Star):
                 if callable(call):
                     try:
                         result = await call(action, **params)
-                        return result is None or result is False or bool(result)
+                        return result is None or bool(result)
                     except Exception as e:
                         logger.error(f"bot.api.call_action({action}) 失败: {e}")
         handler = getattr(self.context, action, None)
@@ -335,7 +337,11 @@ class GroupAdminPlugin(Star):
     # ===================== OneBot API 封装 =====================
 
     async def _recall_message(self, event: AstrMessageEvent, message_id: str):
-        return await self._execute_action(event, "recall", message_id=message_id)
+        """撤回消息。OneBot 标准 API 名为 delete_msg，旧实现可能叫 recall。"""
+        result = await self._execute_action(event, "delete_msg", message_id=message_id)
+        if not result:
+            result = await self._execute_action(event, "recall", message_id=message_id)
+        return result
 
     async def _set_group_admin(self, event: AstrMessageEvent, group_id: str, qq: str, enable: bool):
         return await self._execute_action(event, "set_group_admin", group_id=group_id, user_id=qq, enable=enable)
@@ -360,6 +366,16 @@ class GroupAdminPlugin(Star):
         result = await self._execute_action(event, "set_essence_msg", **kwargs)
         if not result:
             result = await self._execute_action(event, "set_essence", **kwargs)
+        return result
+
+    async def _delete_essence(self, event: AstrMessageEvent, message_id: str, group_id: str = None):
+        """取消精华消息。OneBot 标准 API 名为 delete_essence_msg。"""
+        kwargs = {"message_id": message_id}
+        if group_id is not None:
+            kwargs["group_id"] = group_id
+        result = await self._execute_action(event, "delete_essence_msg", **kwargs)
+        if not result:
+            result = await self._execute_action(event, "delete_essence", **kwargs)
         return result
 
     async def _mute_member(self, event: AstrMessageEvent, group_id: str, qq: str, duration_seconds: int):
@@ -423,9 +439,9 @@ class GroupAdminPlugin(Star):
             logger.error(f"获取昵称失败: {e}")
         return user_id
 
-    async def _notify_admins(self, text: str):
+    async def _notify_admins(self, text: str, group_id: str = ""):
         """向 join_notify_admins 配置的管理员发送私聊通知。"""
-        for admin_id in self.config.get("join_notify_admins", []) or []:
+        for admin_id in self.get_group_setting(group_id, "join_notify_admins", []) or []:
             await self._send_private_msg(str(admin_id), text)
 
     # ===================== 计数统计（#29） =====================
@@ -445,6 +461,28 @@ class GroupAdminPlugin(Star):
     def reset_group_stats(self, group_id: str):
         self.stats.setdefault("groups", {})[str(group_id)] = {"messages": {}}
         self.save_stats()
+
+    async def _record_mute_and_maybe_kick(self, event: AstrMessageEvent, group_id: str, user_id: str, operator_id: str = ""):
+        """记录被禁言次数，达到阈值后自动踢出。阈值为 0/空则关闭。"""
+        try:
+            threshold = int(self.get_group_setting(group_id, "mute_kick_threshold", 0) or 0)
+        except (TypeError, ValueError):
+            threshold = 0
+        if threshold <= 0:
+            return
+        group_key = str(group_id)
+        user_key = str(user_id)
+        groups = self.stats.setdefault("groups", {})
+        g = groups.setdefault(group_key, {"messages": {}})
+        counts = g.setdefault("mute_counts", {})
+        counts[user_key] = int(counts.get(user_key, 0)) + 1
+        self.save_stats()
+        if counts[user_key] >= threshold:
+            ok = await self._kick_member(event, group_id, user_id)
+            if ok:
+                counts[user_key] = 0
+                self.save_stats()
+                await self._send(event, self._build_text(f"{user_id} 禁言次数达到 {threshold} 次，已自动踢出"))
 
     # ===================== 群管指令 =====================
 
@@ -719,6 +757,8 @@ class GroupAdminPlugin(Star):
             except ValueError:
                 pass
         ok = await self._mute_member(event, group_id, qq, minutes * 60)
+        if ok:
+            await self._record_mute_and_maybe_kick(event, group_id, qq, sender_id)
         if self._should_notify_mute(ok):
             yield event.plain_result(f"禁言成功（{minutes}分钟）" if ok else "禁言失败")
 
@@ -888,6 +928,22 @@ class GroupAdminPlugin(Star):
         ok = await self._set_essence(event, reply_id, group_id=str(raw.get("group_id")))
         yield event.plain_result("设精成功" if ok else "设精失败")
 
+    @filter.command("取消设精", "取消精华消息")
+    async def cancel_essence_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        if not self._is_group_admin(raw) and not self._is_group_owner(raw):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            yield event.plain_result("请引用一条精华消息后使用该指令")
+            return
+        ok = await self._delete_essence(event, reply_id, group_id=str(raw.get("group_id")))
+        yield event.plain_result("取消设精成功" if ok else "取消设精失败")
+
     # #24: 改群头像
     @filter.command("改群头像", "引用图片回复即可修改群头像")
     async def set_group_avatar_cmd(self, event: AstrMessageEvent):
@@ -1044,6 +1100,8 @@ class GroupAdminPlugin(Star):
         # 29天23小时59分 = 29*86400 + 23*3600 + 59*60 = 2591640 秒
         duration = 29 * 86400 + 23 * 3600 + 59 * 60
         ok = await self._mute_member(event, group_id, qq, duration)
+        if ok:
+            await self._record_mute_and_maybe_kick(event, group_id, qq, sender_id)
         yield event.plain_result("已鞭尸" if ok else "鞭尸失败")
 
     @filter.command("排名", "查看本群发言排名")
@@ -1222,16 +1280,18 @@ class GroupAdminPlugin(Star):
         self._increment_message_count(group_id, user_id)
 
         # 违规检测（#19）
-        enabled_groups = self.config.get("violation_enabled_groups", [])
+        enabled_groups = self.get_group_setting(group_id, "violation_enabled_groups", [])
         if enabled_groups and group_id in [str(x) for x in enabled_groups]:
-            keywords = self.config.get("violation_keywords", [])
+            keywords = self.get_group_setting(group_id, "violation_keywords", [])
             if keywords:
                 msg_text = self._extract_text(raw)
                 if msg_text and any(kw in msg_text for kw in keywords):
-                    action = self.config.get("violation_action", "none")
+                    action = self.get_group_setting(group_id, "violation_action", "none")
                     if action == "mute":
-                        minutes = int(self.config.get("violation_mute_minutes", 10))
-                        await self._mute_member(event, group_id, user_id, minutes * 60)
+                        minutes = int(self.get_group_setting(group_id, "violation_mute_minutes", 10))
+                        ok = await self._mute_member(event, group_id, user_id, minutes * 60)
+                        if ok:
+                            await self._record_mute_and_maybe_kick(event, group_id, user_id, str(raw.get("self_id", "")))
                         yield event.plain_result(f"检测到违规内容，已禁言 {minutes} 分钟")
                     elif action == "recall":
                         msg_id = raw.get("message_id")
@@ -1265,6 +1325,19 @@ class GroupAdminPlugin(Star):
         if not raw or not isinstance(raw, dict):
             return
 
+        # 禁言通知统计（#103）
+        if raw.get("post_type") == "notice" and raw.get("notice_type") == "group_ban":
+            group_id = str(raw.get("group_id"))
+            target_id = str(raw.get("user_id", ""))
+            operator_id = str(raw.get("operator_id", ""))
+            try:
+                duration = int(raw.get("duration", 0) or 0)
+            except (TypeError, ValueError):
+                duration = 0
+            if target_id and duration > 0:
+                await self._record_mute_and_maybe_kick(event, group_id, target_id, operator_id)
+            return
+
         # 入群欢迎
         if raw.get("post_type") == "notice" and raw.get("notice_type") == "group_increase":
             group_id = str(raw.get("group_id"))
@@ -1280,9 +1353,9 @@ class GroupAdminPlugin(Star):
             user_id = str(raw.get("user_id"))
             flag = raw.get("flag", "")
             comment = raw.get("comment", "")
-            enabled_groups = self.config.get("violation_enabled_groups", [])
-            violation_keywords = self.config.get("violation_keywords", [])
-            join_approve_keywords = self.config.get("join_approve_keywords", [])
+            enabled_groups = self.get_group_setting(group_id, "violation_enabled_groups", [])
+            violation_keywords = self.get_group_setting(group_id, "violation_keywords", [])
+            join_approve_keywords = self.get_group_setting(group_id, "join_approve_keywords", [])
             enabled = enabled_groups and group_id in [str(x) for x in enabled_groups]
 
             # 命中违禁词：拒绝 + 通知管理员
@@ -1292,7 +1365,8 @@ class GroupAdminPlugin(Star):
                 await self._notify_admins(
                     f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
                     f"验证消息: {comment}\n"
-                    f"原因: 命中违禁词"
+                    f"原因: 命中违禁词",
+                    group_id=group_id,
                 )
                 return
 
@@ -1303,12 +1377,13 @@ class GroupAdminPlugin(Star):
                 await self._notify_admins(
                     f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
                     f"验证消息: {comment}\n"
-                    f"原因: 命中关键词"
+                    f"原因: 命中关键词",
+                    group_id=group_id,
                 )
                 return
 
             # 群内提醒（#57）：发送申请消息到对应群聊，等待管理员引用回复同意/拒绝
-            if self.config.get("join_request_notify_in_group", False):
+            if self.get_group_setting(group_id, "join_request_notify_in_group", False):
                 nickname = await self._get_user_nickname(event, user_id)
                 notify_text = (
                     f"【有新人加群申请】\n"
@@ -1325,7 +1400,8 @@ class GroupAdminPlugin(Star):
                     self.save_config()
                     await self._notify_admins(
                         f"[加群请求] {user_id} 申请加入群 {group_id}\n"
-                        f"已在群内发送提醒，请管理员引用回复同意/拒绝"
+                        f"已在群内发送提醒，请管理员引用回复同意/拒绝",
+                        group_id=group_id,
                     )
 
     @filter.after_message_sent()
@@ -1337,12 +1413,12 @@ class GroupAdminPlugin(Star):
         group_id = str(raw.get("group_id", ""))
         if not group_id:
             return
-        enabled = self.config.get("auto_recall_enabled_groups", [])
+        enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
         if not enabled:
             return
         if group_id not in [str(x) for x in enabled]:
             return
-        keywords = self.config.get("auto_recall_keywords", [])
+        keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
         if not keywords:
             return
         msg_text = self._extract_text(raw)
