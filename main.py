@@ -13,9 +13,16 @@ except ImportError:
 
 import json
 import os
-from pathlib import Path
 import re
 import time
+import base64
+from collections import defaultdict
+from pathlib import Path
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
 
 
 def _parse_qq_list(text: str) -> list:
@@ -48,6 +55,11 @@ class GroupAdminPlugin(Star):
         self.config = self.load_config()
         self.stats = self.load_json(self.stats_path, {"groups": {}})
         self.reports = self.load_json(self.reports_path, {"pending": []})
+
+        # 群违规检测运行时状态（#109 PR #1 合并自参考插件）
+        # spam_records[(group_id, user_id)] -> [timestamp, ...]
+        # 仅内存，进程重启清空（与参考插件行为一致）
+        self.spam_records = defaultdict(list)
 
     # ===================== 通用 IO =====================
 
@@ -100,6 +112,46 @@ class GroupAdminPlugin(Star):
             "pending_join_requests": {},
             # #74 配置按群独立（保留全局默认值）
             "group_overrides": {},
+            # ====== 群违规检测（合并自 astrbot_plugin_group_moderation） ======
+            # AI 审核 API（图片 / 骂人 AI 检测共用）
+            "api_type": "openai_vision",
+            "api_endpoint": "",
+            "api_key": "",
+            "model_name": "gpt-4o",
+            "detection_prompt": "",
+            "threshold": 0.7,
+            "check_porn": True,
+            "check_sexy": True,
+            # 监控群组（* 或 all 表示全部启用；为空表示不监控；可按群覆盖为 bool）
+            "enabled_groups": [],
+            "spam_check_enabled": True,
+            "spam_threshold": 5,
+            "spam_time_window": 10,
+            "spam_ban_duration": 600,
+            "profanity_check_enabled": True,
+            "profanity_use_ai": True,
+            "profanity_ban_duration": 600,
+            "profanity_keywords": [
+                "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
+                "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
+                "贱人", "婊子",
+            ],
+            "ad_check_enabled": True,
+            "ad_ban_duration": 600,
+            "ad_keywords": [
+                "加群", "加微信", "加QQ", "联系我", "私聊", "代练", "代打",
+                "刷钻", "刷币", "外挂", "辅助", "出售", "转让", "低价",
+                "优惠", "促销", "折扣", "代购", "微商", "兼职", "赚钱",
+                "日赚", "月入", "进群",
+            ],
+            "link_check_enabled": False,
+            "link_ban_duration": 600,
+            "group_promotion_check_enabled": True,
+            "group_promotion_ban_duration": 600,
+            "ban_duration": 600,
+            "whitelist_users": [],
+            "admin_bypass": True,
+            "notify_on_violation": True,
         }
 
     def load_config(self) -> dict:
@@ -567,6 +619,711 @@ class GroupAdminPlugin(Star):
                 counts[user_key] = 0
                 self.save_stats()
                 await self._send(event, self._build_text(f"{user_id} 禁言次数达到 {threshold} 次，已自动踢出"))
+
+    # ===================== 群违规检测（合并自 astrbot_plugin_group_moderation） =====================
+
+    def _record_violation(self, group_id: str, user_id: str, kind: str):
+        """把一次违规记录到 stats 中（持久化）。"""
+        g = self.stats.setdefault("groups", {}).setdefault(str(group_id), {"messages": {}})
+        counts = g.setdefault("violation_counts", {})
+        bucket = counts.setdefault(kind, {})
+        bucket[str(user_id)] = int(bucket.get(str(user_id), 0)) + 1
+        self.save_stats()
+
+    def _is_group_monitoring_enabled(self, group_id: str) -> bool:
+        """群是否启用违规检测。
+        优先级
+        1. group_overrides[gid]["enabled_groups"] 为 bool 时，按 bool 决定
+        2. top-level enabled_groups 列表：包含 * / all 表示全部；包含群号表示启用
+        3. 兼容旧 violation_enabled_groups 列表
+        """
+        overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
+        v = overrides.get("enabled_groups")
+        if isinstance(v, bool):
+            return v
+        enabled = self.config.get("enabled_groups", []) or []
+        if not enabled:
+            return False
+        for x in enabled:
+            sx = str(x).lower()
+            if sx in ("*", "all"):
+                return True
+            if str(x) == str(group_id):
+                return True
+        legacy = self.config.get("violation_enabled_groups", []) or []
+        return str(group_id) in [str(x) for x in legacy]
+
+    def _is_user_whitelisted(self, group_id: str, user_id: str) -> bool:
+        whitelist = self.get_group_setting(group_id, "whitelist_users", []) or []
+        return str(user_id) in [str(x) for x in whitelist]
+
+    def _moderation_admin_bypass(self, group_id: str, raw: dict) -> bool:
+        if not self.get_group_setting(group_id, "admin_bypass", True):
+            return False
+        role = raw.get("sender", {}).get("role", "") if isinstance(raw, dict) else ""
+        return role in {"admin", "owner"}
+
+    def _moderation_ban_duration(self, group_id: str, kind: str) -> int:
+        """按违规类型读取对应禁言时长（秒）。"""
+        key_map = {
+            "image": "ban_duration",
+            "spam": "spam_ban_duration",
+            "profanity": "profanity_ban_duration",
+            "ad": "ad_ban_duration",
+            "link": "link_ban_duration",
+            "group_promotion": "group_promotion_ban_duration",
+        }
+        key = key_map.get(kind, "ban_duration")
+        default_map = {
+            "image": 600, "spam": 600, "profanity": 600,
+            "ad": 600, "link": 600, "group_promotion": 600,
+        }
+        try:
+            v = int(self.get_group_setting(group_id, key, default_map.get(kind, 600)) or 600)
+        except (TypeError, ValueError):
+            v = default_map.get(kind, 600)
+        return max(1, v)
+
+    async def _handle_violation(
+        self,
+        event: AstrMessageEvent,
+        kind: str,
+        group_id: str,
+        user_id: str,
+        message_id: str,
+        reason: str = "",
+    ) -> bool:
+        """处理一条违规：撤回 + 按配置时长禁言 + 计数 + 通知。"""
+        ok_any = False
+        # 1. 撤回
+        if message_id:
+            recalled = await self._recall_message(event, str(message_id))
+            ok_any = recalled
+        # 2. 禁言
+        duration = self._moderation_ban_duration(group_id, kind)
+        muted = await self._mute_member(event, group_id, user_id, duration)
+        if muted:
+            ok_any = True
+            # 复用现有的 mute_kick_threshold 计数
+            await self._record_mute_and_maybe_kick(event, group_id, user_id, "moderation")
+        # 3. 计数
+        self._record_violation(group_id, user_id, kind)
+        # 4. 通知
+        if self.get_group_setting(group_id, "notify_on_violation", True):
+            label_map = {
+                "image": "违规图片", "spam": "刷屏", "profanity": "骂人",
+                "ad": "广告", "link": "链接", "group_promotion": "群号推广",
+            }
+            label = label_map.get(kind, "违规")
+            note = f"检测到{label}行为"
+            if reason:
+                note += f"（{reason}）"
+            note += f"，已撤回并禁言 {duration} 秒。"
+            await self._send(event, self._build_text(note))
+        return ok_any
+
+    async def _moderation_dispatch(self, event, raw, group_id: str, user_id: str) -> bool:
+        """群消息违规检测总入口。"""
+        if not self._is_group_monitoring_enabled(group_id):
+            return False
+        if self._is_user_whitelisted(group_id, user_id):
+            return False
+        if self._moderation_admin_bypass(group_id, raw):
+            return False
+        msg_text = self._extract_text(raw) if isinstance(raw, dict) else ""
+        # 1) 刷屏（不依赖文本）
+        if await self._check_spam(group_id, user_id):
+            mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+            await self._handle_violation(event, "spam", group_id, user_id, mid)
+            return True
+        # 2) 文本类检测
+        if msg_text:
+            if await self._check_profanity(msg_text, event, group_id, user_id):
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                await self._handle_violation(event, "profanity", group_id, user_id, mid)
+                return True
+            if await self._check_ad(msg_text, event, group_id, user_id):
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                await self._handle_violation(event, "ad", group_id, user_id, mid)
+                return True
+            if await self._check_link(msg_text, event, group_id, user_id):
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                await self._handle_violation(event, "link", group_id, user_id, mid)
+                return True
+            if await self._check_group_promotion(msg_text, event, group_id, user_id):
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                await self._handle_violation(event, "group_promotion", group_id, user_id, mid)
+                return True
+        # 3) 图片检测
+        image_urls = self._collect_image_urls(raw)
+        for url in image_urls:
+            violated, reason = await self._check_image(url)
+            if violated:
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                await self._handle_violation(event, "image", group_id, user_id, mid, reason)
+                return True
+        return False
+
+    # ----- 图片检测 -----
+
+    def _collect_image_urls(self, raw) -> list:
+        urls = []
+        if not isinstance(raw, dict):
+            return urls
+        for seg in raw.get("message", []) or []:
+            if isinstance(seg, dict):
+                if seg.get("type") == "image":
+                    data = seg.get("data", {}) or {}
+                    u = data.get("url") or data.get("file") or ""
+                    if u and u not in urls:
+                        urls.append(u)
+        return urls
+
+    async def _check_image(self, image_url: str):
+        """调用 AI API 审核图片。返回 (is_violation, reason)。"""
+        if aiohttp is None:
+            logger.warning("[群违规检测] aiohttp 未安装，跳过图片审核")
+            return False, ""
+        api_endpoint = self.config.get("api_endpoint", "")
+        api_key = self.config.get("api_key", "")
+        api_type = self.config.get("api_type", "openai_vision")
+        if not api_endpoint:
+            return False, ""
+        try:
+            image_data = await self._download_image(image_url)
+            if not image_data:
+                return False, ""
+            image_b64 = base64.b64encode(image_data).decode("utf-8")
+            if api_type == "moderation":
+                return await self._check_with_moderation_api(api_endpoint, api_key, image_b64)
+            return await self._check_with_openai_vision(api_endpoint, api_key, image_b64)
+        except Exception as e:
+            logger.error(f"[群违规检测] 图片审核失败: {e}")
+            return False, ""
+
+    async def _check_with_openai_vision(self, api_endpoint: str, api_key: str, image_b64: str):
+        model_name = self.config.get("model_name", "gpt-4o")
+        prompt = self.config.get("detection_prompt") or (
+            "请分析这张图片，判断是否包含违规内容（色情/擦边等）。"
+            "请仅返回 JSON：{\"is_violation\": true/false, \"type\": \"porn/sexy/normal\", "
+            "\"confidence\": 0.0-1.0, \"reason\": \"简短原因\"}"
+        )
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            ]}],
+            "max_tokens": 500,
+            "temperature": 0.1,
+        }
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_endpoint, json=payload, headers=headers, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"[群违规检测] OpenAI Vision API 失败: {resp.status} {text[:200]}")
+                        return False, ""
+                    data = await resp.json()
+            content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
+            return self._parse_openai_response(content)
+        except Exception as e:
+            logger.error(f"[群违规检测] OpenAI Vision 调用失败: {e}")
+            return False, ""
+
+    def _parse_openai_response(self, content: str):
+        if not content:
+            return False, ""
+        try:
+            content = content.strip()
+            if content.startswith("```"):
+                lines = content.split("\n")
+                content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+            text = match.group() if match else content
+            data = json.loads(text)
+            is_violation = bool(data.get("is_violation", False))
+            v_type = str(data.get("type", "normal")).lower()
+            try:
+                confidence = float(data.get("confidence", 0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            reason = str(data.get("reason", ""))
+            threshold = float(self.config.get("threshold", 0.7) or 0.7)
+            check_porn = bool(self.config.get("check_porn", True))
+            check_sexy = bool(self.config.get("check_sexy", True))
+            if is_violation and confidence >= threshold:
+                if v_type == "porn" and check_porn:
+                    return True, f"检测到色情内容 (置信度: {confidence:.0%}) - {reason}"
+                if v_type == "sexy" and check_sexy:
+                    return True, f"检测到擦边内容 (置信度: {confidence:.0%}) - {reason}"
+            return False, ""
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"[群违规检测] 解析 OpenAI 响应失败: {e}")
+            return False, ""
+
+    async def _check_with_moderation_api(self, api_endpoint: str, api_key: str, image_b64: str):
+        payload = {"input": image_b64}
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_endpoint, json=payload, headers=headers, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[群违规检测] Moderation API 失败: {resp.status}")
+                        return False, ""
+                    data = await resp.json()
+            results = data.get("results") or []
+            if not results:
+                return False, ""
+            categories = results[0].get("categories", {}) or {}
+            scores = results[0].get("category_scores", {}) or {}
+            if categories.get("sexual"):
+                return True, f"检测到性内容 (置信度: {scores.get('sexual', 0):.0%})"
+            return False, ""
+        except Exception as e:
+            logger.error(f"[群违规检测] Moderation API 调用失败: {e}")
+            return False, ""
+
+    async def _download_image(self, url: str):
+        if aiohttp is None:
+            return None
+        try:
+            if url.startswith("http://") or url.startswith("https://"):
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=timeout) as resp:
+                        if resp.status == 200:
+                            return await resp.read()
+            elif url.startswith("base64://"):
+                return base64.b64decode(url[9:])
+            elif url.startswith("file://"):
+                with open(url[7:], "rb") as f:
+                    return f.read()
+            elif url and not url.startswith("http"):
+                # 某些实现把图片作为本地路径返回
+                try:
+                    with open(url, "rb") as f:
+                        return f.read()
+                except OSError:
+                    return None
+        except Exception as e:
+            logger.error(f"[群违规检测] 下载图片失败: {e}")
+        return None
+
+    # ----- 刷屏检测 -----
+
+    async def _check_spam(self, group_id: str, user_id: str) -> bool:
+        try:
+            threshold = int(self.get_group_setting(group_id, "spam_threshold", 5) or 5)
+            window = int(self.get_group_setting(group_id, "spam_time_window", 10) or 10)
+        except (TypeError, ValueError):
+            return False
+        if not self.get_group_setting(group_id, "spam_check_enabled", True):
+            return False
+        if threshold <= 0 or window <= 0:
+            return False
+        now = time.time()
+        key = f"{group_id}_{user_id}"
+        records = self.spam_records[key]
+        records[:] = [t for t in records if now - t < window]
+        records.append(now)
+        return len(records) >= threshold
+
+    # ----- 骂人检测 -----
+
+    async def _check_profanity(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
+        if not self.get_group_setting(group_id, "profanity_check_enabled", True):
+            return False
+        if not msg_text:
+            return False
+        use_ai = bool(self.get_group_setting(group_id, "profanity_use_ai", True))
+        if use_ai and aiohttp is not None:
+            api_endpoint = self.config.get("api_endpoint", "")
+            api_key = self.config.get("api_key", "")
+            if api_endpoint:
+                is_profanity, reason = await self._check_profanity_with_ai(api_endpoint, api_key, msg_text)
+                if is_profanity:
+                    logger.warning(f"[群违规检测] 骂人 用户 {user_id} {reason}")
+                    return True
+                return False  # AI 模式下不再走关键词
+        keywords = self.get_group_setting(group_id, "profanity_keywords", []) or []
+        text_lower = msg_text.lower()
+        for kw in keywords:
+            if str(kw).lower() and str(kw).lower() in text_lower:
+                return True
+        return False
+
+    async def _check_profanity_with_ai(self, api_endpoint: str, api_key: str, msg_text: str):
+        model_name = self.config.get("model_name", "gpt-4o")
+        prompt = (
+            "你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n"
+            "请仅返回 JSON：{\"is_profanity\": true/false, \"reason\": \"简短原因\"}"
+        )
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": f"{prompt}\n\n待检测文本：{msg_text}"}],
+            "max_tokens": 200,
+            "temperature": 0.1,
+        }
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_endpoint, json=payload, headers=headers, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[群违规检测] 骂人 AI 失败: {resp.status}")
+                        return False, ""
+                    data = await resp.json()
+            content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
+            content = content.strip()
+            if content.startswith("```"):
+                lines = content.split("\n")
+                content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+            text = match.group() if match else content
+            obj = json.loads(text)
+            return bool(obj.get("is_profanity", False)), str(obj.get("reason", ""))
+        except Exception as e:
+            logger.error(f"[群违规检测] 骂人 AI 解析失败: {e}")
+            return False, ""
+
+    # ----- 广告 / 链接 / 群号推广 -----
+
+    async def _check_ad(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
+        if not self.get_group_setting(group_id, "ad_check_enabled", True):
+            return False
+        if not msg_text:
+            return False
+        keywords = self.get_group_setting(group_id, "ad_keywords", []) or []
+        text_lower = msg_text.lower()
+        for kw in keywords:
+            if str(kw).lower() and str(kw).lower() in text_lower:
+                return True
+        return False
+
+    async def _check_link(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
+        if not self.get_group_setting(group_id, "link_check_enabled", False):
+            return False
+        if not msg_text:
+            return False
+        pattern = r"(https?://[^\s]+|www\.[^\s]+\.[^\s]+|[^\s]+\.(com|cn|net|org|io|xyz|top|vip|cc|me|tv|edu|gov)[^\s]*)"
+        return re.search(pattern, msg_text, re.IGNORECASE) is not None
+
+    async def _check_group_promotion(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
+        if not self.get_group_setting(group_id, "group_promotion_check_enabled", True):
+            return False
+        if not msg_text:
+            return False
+        promotion_keywords = ["进群", "加群", "群号", "入群", "拉群", "建群"]
+        if not any(kw in msg_text for kw in promotion_keywords):
+            return False
+        group_pattern = r"[;；:,，\s]*(\d{5,12})"
+        return bool(re.findall(group_pattern, msg_text))
+
+    # ----- 群违规检测管理命令（仅插件管理员） -----
+
+    def _moderation_require_admin(self, event):
+        """校验消息发送者是否为插件管理员。是则返回 user_id，否则返回 None。"""
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            return None
+        sender_id = str(raw.get("user_id", ""))
+        if not self.is_plugin_admin(sender_id):
+            return None
+        return sender_id
+
+    async def _moderation_require_admin_msg(self, event):
+        if self._moderation_require_admin(event) is None:
+            raw = self._get_raw_message(event)
+            if raw and not raw.get("group_id"):
+                yield event.plain_result("此指令只能在群聊中使用")
+                return False
+            yield event.plain_result("只有插件管理员可执行此操作")
+            return False
+        return True
+
+    @filter.command("群违规检测状态", "查看群违规检测插件状态")
+    async def moderation_status_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        api_type = self.config.get("api_type", "openai_vision")
+        profanity_use_ai = self.config.get("profanity_use_ai", True)
+        profanity_mode = "AI检测" if profanity_use_ai else "关键词检测"
+        whitelist_users = self.config.get("whitelist_users", [])
+        profanity_keywords = self.config.get("profanity_keywords", [])
+        ad_keywords = self.config.get("ad_keywords", [])
+        enabled_groups = self.config.get("enabled_groups", [])
+        text = (
+            "【群违规检测插件状态】\n"
+            f"API 类型: {api_type}\n"
+            f"API 站点: {self.config.get('api_endpoint', '') or '未配置'}\n"
+            f"API Key: {'已配置' if self.config.get('api_key') else '未配置'}\n"
+            f"模型: {self.config.get('model_name', 'gpt-4o')}\n"
+            f"\n"
+            f"监控群组: {enabled_groups if enabled_groups else '全部（需在群内启用 /设置群配置 enabled_groups true）'}\n"
+            f"\n"
+            f"【禁言时长（秒）】\n"
+            f"图片: {self.config.get('ban_duration', 600)}\n"
+            f"刷屏: {self.config.get('spam_ban_duration', 600)}\n"
+            f"骂人: {self.config.get('profanity_ban_duration', 600)}\n"
+            f"广告: {self.config.get('ad_ban_duration', 600)}\n"
+            f"链接: {self.config.get('link_ban_duration', 600)}\n"
+            f"群号推广: {self.config.get('group_promotion_ban_duration', 600)}\n"
+            f"\n"
+            f"【检测开关】\n"
+            f"图片(色情/擦边): {self.config.get('check_porn', True)}/{self.config.get('check_sexy', True)}\n"
+            f"刷屏: {self.config.get('spam_check_enabled', True)}（{self.config.get('spam_threshold', 5)} 条/{self.config.get('spam_time_window', 10)} 秒）\n"
+            f"骂人: {self.config.get('profanity_check_enabled', True)}（{profanity_mode}, 关键词 {len(profanity_keywords)} 个）\n"
+            f"广告: {self.config.get('ad_check_enabled', True)}（关键词 {len(ad_keywords)} 个）\n"
+            f"链接: {self.config.get('link_check_enabled', False)}\n"
+            f"群号推广: {self.config.get('group_promotion_check_enabled', True)}\n"
+            f"\n"
+            f"【其他】\n"
+            f"白名单用户: {len(whitelist_users)} 人\n"
+            f"管理员豁免: {self.config.get('admin_bypass', True)}\n"
+            f"违规通知: {self.config.get('notify_on_violation', True)}\n"
+            f"检测阈值: {self.config.get('threshold', 0.7)}"
+        )
+        yield event.plain_result(text)
+
+    @filter.command("设置图片禁言时长", "设置图片违规禁言时长（秒）")
+    async def set_image_ban_duration_cmd(self, event: AstrMessageEvent, seconds: int = 0):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        if seconds <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0秒")
+            return
+        self.config["ban_duration"] = seconds
+        yield event.plain_result(f"[成功] 图片违规禁言时长已设置为 {seconds} 秒")
+
+    @filter.command("设置刷屏禁言时长", "设置刷屏禁言时长（秒）")
+    async def set_spam_ban_duration_cmd(self, event: AstrMessageEvent, seconds: int = 0):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        if seconds <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0秒")
+            return
+        self.config["spam_ban_duration"] = seconds
+        yield event.plain_result(f"[成功] 刷屏禁言时长已设置为 {seconds} 秒")
+
+    @filter.command("设置骂人禁言时长", "设置骂人禁言时长（秒）")
+    async def set_profanity_ban_duration_cmd(self, event: AstrMessageEvent, seconds: int = 0):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        if seconds <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0秒")
+            return
+        self.config["profanity_ban_duration"] = seconds
+        yield event.plain_result(f"[成功] 骂人禁言时长已设置为 {seconds} 秒")
+
+    @filter.command("添加骂人关键词", "添加骂人关键词（关键词检测模式）")
+    async def add_profanity_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        keyword = (keyword or "").strip()
+        if not keyword:
+            yield event.plain_result("[错误] 请提供关键词")
+            return
+        kws = self.config.setdefault("profanity_keywords", [])
+        if keyword in kws:
+            yield event.plain_result(f"[错误] 关键词 '{keyword}' 已存在")
+            return
+        kws.append(keyword)
+        self.config["profanity_keywords"] = kws
+        yield event.plain_result(f"[成功] 已添加骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
+
+    @filter.command("删除骂人关键词", "删除骂人关键词")
+    async def remove_profanity_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        keyword = (keyword or "").strip()
+        if not keyword:
+            yield event.plain_result("[错误] 请提供关键词")
+            return
+        kws = self.config.get("profanity_keywords", [])
+        if keyword not in kws:
+            yield event.plain_result(f"[错误] 关键词 '{keyword}' 不存在")
+            return
+        kws.remove(keyword)
+        self.config["profanity_keywords"] = kws
+        yield event.plain_result(f"[成功] 已删除骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
+
+    @filter.command("查看骂人关键词", "查看骂人关键词列表")
+    async def list_profanity_keywords_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        kws = self.config.get("profanity_keywords", [])
+        if not kws:
+            yield event.plain_result("当前没有设置骂人关键词")
+            return
+        listing = "\n".join([f"{i+1}. {kw}" for i, kw in enumerate(kws)])
+        yield event.plain_result(f"骂人关键词列表（{len(kws)} 个）：\n{listing}")
+
+    @filter.command("切换骂人检测模式", "切换 AI 检测 / 关键词检测")
+    async def toggle_profanity_mode_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        cur = bool(self.config.get("profanity_use_ai", True))
+        self.config["profanity_use_ai"] = not cur
+        mode = "AI检测" if not cur else "关键词检测"
+        yield event.plain_result(f"[成功] 已切换为 {mode} 模式")
+
+    @filter.command("添加白名单用户", "添加白名单用户（不受违规检测限制）")
+    async def add_whitelist_user_cmd(self, event: AstrMessageEvent, user_id: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        user_id = str(user_id).strip()
+        if not user_id:
+            yield event.plain_result("[错误] 请提供QQ号")
+            return
+        wl = self.config.setdefault("whitelist_users", [])
+        if user_id in [str(x) for x in wl]:
+            yield event.plain_result(f"[错误] 用户 {user_id} 已在白名单中")
+            return
+        wl.append(user_id)
+        self.config["whitelist_users"] = wl
+        yield event.plain_result(f"[成功] 已添加 {user_id} 到白名单（当前 {len(wl)} 人）")
+
+    @filter.command("删除白名单用户", "从白名单移除用户")
+    async def remove_whitelist_user_cmd(self, event: AstrMessageEvent, user_id: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        user_id = str(user_id).strip()
+        if not user_id:
+            yield event.plain_result("[错误] 请提供QQ号")
+            return
+        wl = self.config.get("whitelist_users", [])
+        new_wl = [u for u in wl if str(u) != user_id]
+        if len(new_wl) == len(wl):
+            yield event.plain_result(f"[错误] 用户 {user_id} 不在白名单中")
+            return
+        self.config["whitelist_users"] = new_wl
+        yield event.plain_result(f"[成功] 已从白名单移除 {user_id}（当前 {len(new_wl)} 人）")
+
+    @filter.command("查看白名单", "查看白名单用户列表")
+    async def list_whitelist_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        wl = self.config.get("whitelist_users", [])
+        if not wl:
+            yield event.plain_result("当前白名单为空")
+            return
+        listing = "\n".join([f"{i+1}. {u}" for i, u in enumerate(wl)])
+        yield event.plain_result(f"白名单用户（{len(wl)} 人）：\n{listing}")
+
+    @filter.command("查看违规统计", "查看违规统计（默认全群；带 QQ 号查个人）")
+    async def view_violation_stats_cmd(self, event: AstrMessageEvent, user_id: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        user_id = (user_id or "").strip()
+        if user_id:
+            g = self.stats.get("groups", {}).get(str(user_id), {})  # 简化：user_id 当群号查
+            counts = g.get("violation_counts", {})
+            total = sum(sum(b.values()) for b in counts.values())
+            yield event.plain_result(
+                f"群 {user_id} 违规统计:\n"
+                f"图片: {sum(counts.get('image', {}).values())} 次\n"
+                f"刷屏: {sum(counts.get('spam', {}).values())} 次\n"
+                f"骂人: {sum(counts.get('profanity', {}).values())} 次\n"
+                f"广告: {sum(counts.get('ad', {}).values())} 次\n"
+                f"链接: {sum(counts.get('link', {}).values())} 次\n"
+                f"群号推广: {sum(counts.get('group_promotion', {}).values())} 次\n"
+                f"总计: {total} 次"
+            )
+        else:
+            groups = self.stats.get("groups", {})
+            total_users = 0
+            total_violations = 0
+            for g in groups.values():
+                for bucket in g.get("violation_counts", {}).values():
+                    total_users += len(bucket)
+                    total_violations += sum(bucket.values())
+            yield event.plain_result(
+                f"违规统计概览:\n违规用户数: {total_users} 人\n总违规次数: {total_violations} 次"
+            )
+
+    @filter.command("设置广告禁言时长", "设置广告禁言时长（秒）")
+    async def set_ad_ban_duration_cmd(self, event: AstrMessageEvent, seconds: int = 0):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        if seconds <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0秒")
+            return
+        self.config["ad_ban_duration"] = seconds
+        yield event.plain_result(f"[成功] 广告禁言时长已设置为 {seconds} 秒")
+
+    @filter.command("设置链接禁言时长", "设置链接禁言时长（秒）")
+    async def set_link_ban_duration_cmd(self, event: AstrMessageEvent, seconds: int = 0):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        if seconds <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0秒")
+            return
+        self.config["link_ban_duration"] = seconds
+        yield event.plain_result(f"[成功] 链接禁言时长已设置为 {seconds} 秒")
+
+    @filter.command("设置群号推广禁言时长", "设置群号推广禁言时长（秒）")
+    async def set_group_promotion_ban_duration_cmd(self, event: AstrMessageEvent, seconds: int = 0):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        if seconds <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0秒")
+            return
+        self.config["group_promotion_ban_duration"] = seconds
+        yield event.plain_result(f"[成功] 群号推广禁言时长已设置为 {seconds} 秒")
+
+    @filter.command("添加广告关键词", "添加广告关键词")
+    async def add_ad_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        keyword = (keyword or "").strip()
+        if not keyword:
+            yield event.plain_result("[错误] 请提供关键词")
+            return
+        kws = self.config.setdefault("ad_keywords", [])
+        if keyword in kws:
+            yield event.plain_result(f"[错误] 关键词 '{keyword}' 已存在")
+            return
+        kws.append(keyword)
+        self.config["ad_keywords"] = kws
+        yield event.plain_result(f"[成功] 已添加广告关键词 '{keyword}'（当前 {len(kws)} 个）")
+
+    @filter.command("删除广告关键词", "删除广告关键词")
+    async def remove_ad_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        keyword = (keyword or "").strip()
+        if not keyword:
+            yield event.plain_result("[错误] 请提供关键词")
+            return
+        kws = self.config.get("ad_keywords", [])
+        if keyword not in kws:
+            yield event.plain_result(f"[错误] 关键词 '{keyword}' 不存在")
+            return
+        kws.remove(keyword)
+        self.config["ad_keywords"] = kws
+        yield event.plain_result(f"[成功] 已删除广告关键词 '{keyword}'（当前 {len(kws)} 个）")
+
+    @filter.command("查看广告关键词", "查看广告关键词列表")
+    async def list_ad_keywords_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        kws = self.config.get("ad_keywords", [])
+        if not kws:
+            yield event.plain_result("当前没有设置广告关键词")
+            return
+        head = "\n".join([f"{i+1}. {kw}" for i, kw in enumerate(kws[:20])])
+        more = f"\n…还有 {len(kws) - 20} 个" if len(kws) > 20 else ""
+        yield event.plain_result(f"广告关键词（{len(kws)} 个）：\n{head}{more}")
 
     async def _edit_special_admins(self, event: AstrMessageEvent, target: str, key: str, label: str, add: bool):
         raw = self._get_raw_message(event)
@@ -1436,25 +2193,8 @@ class GroupAdminPlugin(Star):
         # 发言计数（#29）
         self._increment_message_count(group_id, user_id)
 
-        # 违规检测（#19）
-        enabled_groups = self.get_group_setting(group_id, "violation_enabled_groups", [])
-        if enabled_groups and group_id in [str(x) for x in enabled_groups]:
-            keywords = self.get_group_setting(group_id, "violation_keywords", [])
-            if keywords:
-                msg_text = self._extract_text(raw)
-                if msg_text and any(kw in msg_text for kw in keywords):
-                    action = self.get_group_setting(group_id, "violation_action", "none")
-                    if action == "mute":
-                        minutes = int(self.get_group_setting(group_id, "violation_mute_minutes", 10))
-                        ok = await self._mute_member(event, group_id, user_id, minutes * 60)
-                        if ok:
-                            await self._record_mute_and_maybe_kick(event, group_id, user_id, str(raw.get("self_id", "")))
-                        yield event.plain_result(f"检测到违规内容，已禁言 {minutes} 分钟")
-                    elif action == "recall":
-                        msg_id = raw.get("message_id")
-                        if msg_id:
-                            await self._recall_message(event, str(msg_id))
-                            yield event.plain_result("检测到违规内容，已撤回")
+        # 群违规检测（合并自参考插件，#19 + 图片/刷屏/骂人/广告/链接/群号推广）
+        await self._moderation_dispatch(event, raw, group_id, user_id)
 
         # 加群申请引用回复处理（#57）
         reply_id = self._get_reply_id(event)

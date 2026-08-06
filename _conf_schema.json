@@ -2,19 +2,19 @@
     "show_recall_notice": {
         "description": "撤回消息后发送提示",
         "type": "bool",
-        "hint": "开启后，Bot 执行撤回操作后会在群里发送一条\"已撤回该消息\"的提示。",
+        "hint": "推荐按群覆盖：在群内执行 /设置群配置 show_recall_notice true/false。",
         "default": true
     },
     "mute_notice": {
         "description": "禁言/解禁后是否回复结果",
         "type": "bool",
-        "hint": "关闭后，禁言/解禁成功时不回复\"禁言成功\"等提示（失败仍会提示）。",
+        "hint": "推荐按群覆盖。",
         "default": true
     },
     "reject_re_add": {
         "description": "踢人后拒绝再次加群",
         "type": "bool",
-        "hint": "开启后，使用 /踢 指令踢出群成员时，会自动拒绝该用户再次加群的请求。",
+        "hint": "踢出后是否自动拒绝该用户再次加群。",
         "default": false
     },
     "plugin_admins": {
@@ -25,84 +25,259 @@
         "default": []
     },
     "auto_recall_keywords": {
-        "description": "Bot发言自动撤回关键词列表",
+        "description": "Bot发言自动撤回关键词列表（推荐按群覆盖）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "当Bot发言命中这些关键词时会自动撤回。",
+        "hint": "推荐按群覆盖：在群内执行 /设置群配置 auto_recall_keywords [关键词列表]。",
         "default": []
     },
     "auto_recall_enabled_groups": {
-        "description": "启用自动撤回的群ID列表",
+        "description": "启用自动撤回的群ID列表（推荐按群覆盖）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "留空则所有群都不启用自动撤回。",
-        "default": []
-    },
-    "violation_keywords": {
-        "description": "违规检测关键词列表",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "群成员消息命中这些关键词时会触发违规处置。",
+        "hint": "留空则默认不启用自动撤回；推荐用 /设置群配置 auto_recall_enabled_groups true 按群开启。",
         "default": []
     },
     "violation_action": {
-        "description": "违规处置动作",
+        "description": "违规处置动作（兼容旧配置，新流程已接管）",
         "type": "string",
-        "hint": "none: 仅提示, mute: 禁言, recall: 撤回",
+        "hint": "none/mute/recall。新的群违规检测（图片/刷屏/骂人/广告/链接/群号推广）一律：撤回+按各自禁言时长禁言。本字段保留为兼容项。",
         "options": ["none", "mute", "recall"],
         "default": "none"
     },
     "violation_mute_minutes": {
-        "description": "违规禁言时长（分钟）",
+        "description": "违规禁言时长（分钟，兼容旧配置）",
         "type": "int",
-        "hint": "违规处置为禁言时的时长。",
+        "hint": "兼容旧 violation_action=mute 配置。新流程下图片/刷屏/骂人/广告/链接/群号推广各自有独立禁言时长（见 *_ban_duration）。",
         "default": 10
     },
     "violation_enabled_groups": {
-        "description": "启用违规检测的群ID列表",
+        "description": "启用违规检测的群ID列表（兼容旧配置）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "留空则所有群都不启用违规检测。",
+        "hint": "兼容旧配置。新配置建议使用 enabled_groups 列表，或在群内 /设置群配置 enabled_groups true / false。",
         "default": []
     },
     "report_notify_admins": {
-        "description": "接收举报通知的插件管理员QQ号列表（私聊通知）",
+        "description": "接收举报通知的插件管理员QQ号列表（推荐按群覆盖）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "/举报 指令触发的举报会私聊通知到这里的QQ号。",
+        "hint": "推荐按群覆盖：在群内执行 /设置群配置 report_notify_admins [QQ列表]。",
         "default": []
     },
     "rank_top_n": {
-        "description": "发言排名榜最多显示人数",
+        "description": "发言排名榜最多显示人数（推荐按群覆盖）",
         "type": "int",
-        "hint": "/排名 指令最多显示前N名。",
+        "hint": "推荐按群覆盖：/设置群配置 rank_top_n N。",
         "default": 10
     },
     "join_approve_keywords": {
-        "description": "加群请求验证消息命中后自动同意的关键词列表",
+        "description": "加群请求验证消息命中后自动同意的关键词列表（推荐按群覆盖）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "用户加群时填写的验证消息命中这些关键词时自动同意，并通过私聊通知 join_notify_admins。",
+        "hint": "推荐按群覆盖：在群内 /设置群配置 join_approve_keywords [关键词列表]。",
         "default": []
     },
     "join_notify_admins": {
-        "description": "加群请求处理结果通知管理员QQ号列表",
+        "description": "加群请求处理结果通知管理员QQ号列表（推荐按群覆盖）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "加群请求自动同意/拒绝时会私聊通知到这里的QQ号。",
+        "hint": "推荐按群覆盖。",
         "default": []
     },
     "join_request_notify_in_group": {
-        "description": "加群申请在对应群内发送提醒",
+        "description": "加群申请在对应群内发送提醒（推荐按群覆盖）",
         "type": "bool",
-        "hint": "开启后，加群请求会在申请加入的群内发送提醒，管理员可引用回复\"同意/拒绝\"。",
+        "hint": "推荐按群覆盖：/设置群配置 join_request_notify_in_group true/false。",
         "default": false
     },
     "group_overrides": {
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
         "items": {},
-        "hint": "按群覆盖配置。常用 key：title_admins/group_admin_admins/kick_admins（专项权限列表）、mute_kick_threshold（禁言阈值）、show_recall_notice、reject_re_add、rank_top_n、violation_*、join_* 等。也可在群内用 /设置群配置 key value 动态设置。",
+        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation。也可在群内用 /设置群配置 key value 动态设置。",
         "default": {}
+    },
+    "api_type": {
+        "description": "图片/AI 审核 API 类型",
+        "type": "string",
+        "hint": "openai_vision: OpenAI Vision 视觉 API；moderation: OpenAI Moderation 审核 API",
+        "options": ["openai_vision", "moderation"],
+        "default": "openai_vision"
+    },
+    "api_endpoint": {
+        "description": "API 站点地址",
+        "type": "string",
+        "hint": "OpenAI Vision 填 chat/completions 端点，如 https://api.openai.com/v1/chat/completions；Moderation 填审核 API 地址",
+        "default": ""
+    },
+    "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "hint": "用于认证请求",
+        "default": ""
+    },
+    "model_name": {
+        "description": "AI 模型名称",
+        "type": "string",
+        "hint": "OpenAI Vision 模型名，如 gpt-4o、Qwen/Qwen2-VL-72B-Instruct",
+        "default": "gpt-4o"
+    },
+    "detection_prompt": {
+        "description": "图片检测提示词",
+        "type": "text",
+        "hint": "留空使用内置默认提示词",
+        "default": ""
+    },
+    "threshold": {
+        "description": "图片违规判定阈值（0-1）",
+        "type": "float",
+        "hint": "AI 返回的置信度超过此值才判定为违规",
+        "default": 0.7
+    },
+    "check_porn": {
+        "description": "检测色情图片",
+        "type": "bool",
+        "hint": "是否启用色情类违规图片检测",
+        "default": true
+    },
+    "check_sexy": {
+        "description": "检测擦边图片",
+        "type": "bool",
+        "hint": "是否启用擦边类违规图片检测",
+        "default": true
+    },
+    "enabled_groups": {
+        "description": "启用违规检测的群号列表（推荐按群覆盖）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "* 或 all 表示全部启用；为空则不启用；推荐按群覆盖：在群内 /设置群配置 enabled_groups true / false。",
+        "default": []
+    },
+    "spam_check_enabled": {
+        "description": "启用刷屏检测",
+        "type": "bool",
+        "hint": "推荐按群覆盖。",
+        "default": true
+    },
+    "spam_threshold": {
+        "description": "刷屏阈值（消息数）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 5
+    },
+    "spam_time_window": {
+        "description": "刷屏检测时间窗口（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 10
+    },
+    "spam_ban_duration": {
+        "description": "刷屏禁言时长（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 600
+    },
+    "profanity_check_enabled": {
+        "description": "启用骂人检测",
+        "type": "bool",
+        "hint": "推荐按群覆盖。",
+        "default": true
+    },
+    "profanity_use_ai": {
+        "description": "使用 AI 检测骂人",
+        "type": "bool",
+        "hint": "true: 调用 AI API 检测；false: 仅关键词匹配。",
+        "default": true
+    },
+    "profanity_ban_duration": {
+        "description": "骂人禁言时长（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 600
+    },
+    "profanity_keywords": {
+        "description": "骂人关键词列表（关键词模式下使用）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "推荐按群覆盖：/设置群配置 profanity_keywords [关键词列表]。",
+        "default": [
+            "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
+            "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
+            "贱人", "婊子"
+        ]
+    },
+    "ad_check_enabled": {
+        "description": "启用广告检测",
+        "type": "bool",
+        "hint": "推荐按群覆盖。",
+        "default": true
+    },
+    "ad_ban_duration": {
+        "description": "广告禁言时长（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 600
+    },
+    "ad_keywords": {
+        "description": "广告关键词列表",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "推荐按群覆盖。",
+        "default": [
+            "加群", "加微信", "加QQ", "联系我", "私聊", "代练", "代打",
+            "刷钻", "刷币", "外挂", "辅助", "出售", "转让", "低价",
+            "优惠", "促销", "折扣", "代购", "微商", "兼职", "赚钱",
+            "日赚", "月入", "进群"
+        ]
+    },
+    "link_check_enabled": {
+        "description": "启用链接检测",
+        "type": "bool",
+        "hint": "推荐按群覆盖。默认关闭。",
+        "default": false
+    },
+    "link_ban_duration": {
+        "description": "链接禁言时长（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 600
+    },
+    "group_promotion_check_enabled": {
+        "description": "启用群号推广检测",
+        "type": "bool",
+        "hint": "推荐按群覆盖。",
+        "default": true
+    },
+    "group_promotion_ban_duration": {
+        "description": "群号推广禁言时长（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 600
+    },
+    "ban_duration": {
+        "description": "图片违规禁言时长（秒）",
+        "type": "int",
+        "hint": "推荐按群覆盖。",
+        "default": 600
+    },
+    "whitelist_users": {
+        "description": "白名单用户QQ号列表（不受违规检测限制）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "推荐按群覆盖。",
+        "default": []
+    },
+    "admin_bypass": {
+        "description": "管理员豁免检测",
+        "type": "bool",
+        "hint": "管理员/群主发送的消息跳过违规检测。",
+        "default": true
+    },
+    "notify_on_violation": {
+        "description": "违规时群内发送通知",
+        "type": "bool",
+        "hint": "推荐按群覆盖。",
+        "default": true
     }
 }
