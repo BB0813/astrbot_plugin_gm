@@ -1041,15 +1041,17 @@ class GroupAdminPlugin(Star):
             return None
         return sender_id
 
-    async def _moderation_require_admin_msg(self, event):
-        if self._moderation_require_admin(event) is None:
-            raw = self._get_raw_message(event)
-            if raw and not raw.get("group_id"):
-                yield event.plain_result("此指令只能在群聊中使用")
-                return False
-            yield event.plain_result("只有插件管理员可执行此操作")
+    async def _moderation_require_admin_msg(self, event) -> bool:
+        """校验插件管理员/群聊环境，不通过则发提示并返回 False。
+        必须保持为普通 async 函数（不能 yield），否则 18 个调用点拿不到 bool。"""
+        if self._moderation_require_admin(event) is not None:
+            return True
+        raw = self._get_raw_message(event)
+        if raw and not raw.get("group_id"):
+            await self._send(event, self._build_text("此指令只能在群聊中使用"))
             return False
-        return True
+        await self._send(event, self._build_text("只有插件管理员可执行此操作"))
+        return False
 
     @filter.command("群违规检测状态", "查看群违规检测插件状态")
     async def moderation_status_cmd(self, event: AstrMessageEvent):
