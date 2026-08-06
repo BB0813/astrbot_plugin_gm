@@ -421,21 +421,43 @@ class GroupAdminPlugin(Star):
         return await self._execute_action(event, "set_group_special_title",
                                           group_id=group_id, user_id=qq, special_title=title)
 
-    async def _clear_group_title(self, event: AstrMessageEvent, group_id: str, qq: str):
-        """清空群头衔。部分 OneBot 实现清空头衔需要 duration=-1。"""
-        # 优先用带 duration=-1 的清空语义，避免 API 返回成功但实际未清空。
-        ok = await self._execute_action(
-            event,
-            "set_group_special_title",
-            group_id=group_id,
-            user_id=qq,
-            special_title="",
-            duration=-1,
+    async def _clear_group_title(self, event: AstrMessageEvent, group_id: str, qq: str) -> bool:
+        """清空群头衔。每步调用后用 get_group_member_info 读回 title 字段校验
+        是否真的清空，避免 OneBot 实现返回成功但实际未清空（#111）。"""
+        async def _verify() -> bool:
+            info = await self._execute_action(
+                event, "get_group_member_info", return_raw=True,
+                group_id=group_id, user_id=qq, no_cache=True,
+            )
+            if isinstance(info, dict):
+                data = info.get("data") or info
+                after = str(data.get("title") or data.get("special_title") or "").strip()
+                return after == ""
+            return False
+
+        # 1) duration=-1（部分实现要求的清空语义）
+        ok1 = await self._execute_action(
+            event, "set_group_special_title",
+            group_id=group_id, user_id=qq,
+            special_title="", duration=-1,
         )
-        if ok:
+        if ok1 and await _verify():
             return True
-        # 回退为单空格，兼容不接受空字符串但视觉上可清空头衔的 OneBot 实现。
-        return await self._set_group_title(event, group_id, qq, " ")
+        # 2) 空字符串（不带 duration）
+        ok2 = await self._execute_action(
+            event, "set_group_special_title",
+            group_id=group_id, user_id=qq, special_title="",
+        )
+        if ok2 and await _verify():
+            return True
+        # 3) 单空格（兼容不接受空字符串的旧实现）
+        ok3 = await self._execute_action(
+            event, "set_group_special_title",
+            group_id=group_id, user_id=qq, special_title=" ",
+        )
+        if ok3 and await _verify():
+            return True
+        return False
 
     async def _set_group_card(self, event: AstrMessageEvent, group_id: str, qq: str, card: str):
         return await self._execute_action(event, "set_group_card",
@@ -826,7 +848,14 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("只有插件管理员、头衔管理员、群管理员或有头衔者本人可执行此操作")
             return
         ok = await self._clear_group_title(event, group_id, target_qq)
-        yield event.plain_result("取消头衔成功" if ok else "取消头衔失败")
+        if ok:
+            yield event.plain_result("取消头衔成功")
+        else:
+            yield event.plain_result(
+                f"取消头衔失败：群 {group_id} 用户 {target_qq} 头衔清除后仍被读到。\n"
+                "可能原因：Bot 权限不足 / 头衔由群主设置且不可由 Bot 修改。\n"
+                "请确认 Bot 仍为群管理员并拥有设置头衔的权限。"
+            )
 
     # #18: 别人昵称 - 设置他人的群昵称
     @filter.command("别人昵称", "设置他人群昵称（需要 @某人 + 新昵称）")
@@ -946,8 +975,13 @@ class GroupAdminPlugin(Star):
             msg += f"\n失败: {', '.join(bad_list)}"
         yield event.plain_result(msg)
 
-    @filter.command("撤回", "撤回消息（引用消息或 /撤回 N 撤回最近N条）")
+    @filter.command("撤回", "撤回消息（/撤回 + 引用消息 / /撤回 @用户 N / /撤回 N）")
     async def recall_cmd(self, event: AstrMessageEvent, count: str = ""):
+        """统一分发器（#109 #110）：
+        - 引用消息 -> 撤回引用消息
+        - @用户 + N -> 撤回该用户最近 N 条
+        - 仅有 N -> 撤回最近 N 条（不含指令本身）
+        """
         try:
             count = int(count) if count else 0
         except (TypeError, ValueError):
@@ -956,40 +990,70 @@ class GroupAdminPlugin(Star):
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
+        group_id = str(raw.get("group_id"))
         if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
 
         reply_id = self._get_reply_id(event)
+        target_qq = self._extract_at_qq(raw)
+        self_msg_id = str(raw.get("message_id", "")) if raw.get("message_id") else ""
+
+        # 1) 引用消息优先
         if reply_id:
             ok = await self._recall_message(event, reply_id)
-            if ok and self.config.get("show_recall_notice", True):
+            if ok and self.get_group_setting(group_id, "show_recall_notice", True):
                 await self._send(event, self._build_text("已撤回该消息"))
             yield event.plain_result("撤回成功" if ok else "撤回失败")
             return
 
-        # /撤回 N 撤回最近 N 条
-        if count > 0:
-            # 先撤回触发指令本身作为兼容回退，缺少历史接口时也能完成一次撤回。
-            self_msg_id = raw.get("message_id")
-            recalled = 0
-            if self_msg_id and await self._recall_message(event, str(self_msg_id)):
-                recalled += 1
-            if recalled >= count:
-                if self.get_group_setting(str(raw.get("group_id")), "show_recall_notice", True):
-                    await self._send(event, self._build_text(f"已撤回 {recalled} 条消息"))
-                yield event.plain_result(f"撤回成功（{recalled} 条）")
-                return
-
-            # 通过 get_group_msg_history 拉最近消息列表，逐条撤回补足数量
+        # 2) @用户 + N（#110）
+        if target_qq:
+            n = max(1, min(count or 1, 50))
             history = await self._execute_action(
                 event, "get_group_msg_history", return_raw=True,
-                group_id=str(raw.get("group_id")), message_id=None,
+                group_id=group_id, message_id=None,
             )
             msgs = []
             if isinstance(history, dict):
                 msgs = history.get("data", {}).get("messages") or history.get("messages") or []
-            seen = {str(self_msg_id)} if self_msg_id else set()
+            if not msgs:
+                yield event.plain_result(
+                    "当前 OneBot 实现不支持按用户撤回（缺少 get_group_msg_history）。\n"
+                    "请使用 /撤回 + 引用消息 撤回指定消息。"
+                )
+                return
+            candidates = [m for m in msgs if str(m.get("user_id")) == str(target_qq)][:n]
+            recalled = 0
+            for m in candidates:
+                mid = m.get("message_id")
+                if mid and str(mid) != self_msg_id and await self._recall_message(event, str(mid)):
+                    recalled += 1
+            if recalled:
+                if self.get_group_setting(group_id, "show_recall_notice", True):
+                    await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息"))
+                yield event.plain_result(f"撤回成功（{recalled} 条）")
+            else:
+                yield event.plain_result("撤回失败，未找到该用户的可撤回消息")
+            return
+
+        # 3) 仅 N：撤回最近 N 条（#109，不撤回指令本身）
+        if count > 0:
+            history = await self._execute_action(
+                event, "get_group_msg_history", return_raw=True,
+                group_id=group_id, message_id=None,
+            )
+            msgs = []
+            if isinstance(history, dict):
+                msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+            if not msgs:
+                yield event.plain_result(
+                    "撤回失败：当前 OneBot 实现不支持 get_group_msg_history。\n"
+                    "请使用 /撤回 + 引用消息 撤回指定消息。"
+                )
+                return
+            seen = {self_msg_id} if self_msg_id else set()
+            recalled = 0
             for m in msgs:
                 if recalled >= count:
                     break
@@ -1000,65 +1064,20 @@ class GroupAdminPlugin(Star):
                 if await self._recall_message(event, str(mid)):
                     recalled += 1
             if recalled:
-                if self.get_group_setting(str(raw.get("group_id")), "show_recall_notice", True):
+                if self.get_group_setting(group_id, "show_recall_notice", True):
                     await self._send(event, self._build_text(f"已撤回 {recalled} 条消息"))
-                if recalled < count and not msgs:
-                    yield event.plain_result(f"撤回成功（{recalled} 条）。当前 OneBot 实现不支持 get_group_msg_history，已回退撤回触发指令。")
-                else:
-                    yield event.plain_result(f"撤回成功（{recalled} 条）")
+                yield event.plain_result(f"撤回成功（{recalled} 条）")
             else:
                 yield event.plain_result("撤回失败，未找到可撤回消息")
             return
 
-        yield event.plain_result("请引用一条消息后使用该指令，或使用 /撤回 N 撤回最近 N 条")
-
-    # #80: 撤回 @用户 数量 - 撤回指定用户最近 N 条
-    @filter.command("撤回用户", "撤回 @用户 最近N条消息（仅群管理员/插件管理员）")
-    async def recall_user_cmd(self, event: AstrMessageEvent, count: int = 1):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
-            yield event.plain_result("只有群管理员或群主可执行此操作")
-            return
-        target_qq = self._extract_at_qq(raw)
-        if not target_qq:
-            yield event.plain_result("请 @要撤回消息的用户")
-            return
-        try:
-            count = int(count)
-        except (TypeError, ValueError):
-            count = 1
-        count = max(1, min(count, 50))  # 上限 50
-        group_id = str(raw.get("group_id"))
-        # 通过 get_group_msg_history 拉消息列表，按 user_id 过滤
-        history = await self._execute_action(
-            event, "get_group_msg_history", return_raw=True,
-            group_id=group_id, message_id=None,
+        # 4) 用法提示
+        yield event.plain_result(
+            "用法：\n"
+            "/撤回 + 引用消息：撤回引用消息\n"
+            "/撤回 @用户 N：撤回该用户最近 N 条（最多 50）\n"
+            "/撤回 N：撤回最近 N 条（不含指令本身）"
         )
-        msgs = []
-        if isinstance(history, dict):
-            msgs = history.get("data", {}).get("messages") or history.get("messages") or []
-        if not msgs:
-            yield event.plain_result(
-                "当前 OneBot 实现不支持 /撤回用户（缺少 get_group_msg_history API）。\n"
-                "请使用引用消息撤回或 /撤回 N。"
-            )
-            return
-        candidates = [m for m in msgs if str(m.get("user_id")) == str(target_qq)]
-        candidates = candidates[:count]
-        recalled = 0
-        for m in candidates:
-            mid = m.get("message_id")
-            if mid and await self._recall_message(event, str(mid)):
-                recalled += 1
-        if recalled:
-            if self.config.get("show_recall_notice", True):
-                await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息"))
-            yield event.plain_result(f"撤回成功（{recalled} 条）")
-        else:
-            yield event.plain_result("撤回失败，未找到该用户的消息")
 
     @filter.command("设精", "设置精华消息")
     async def essence_cmd(self, event: AstrMessageEvent):
