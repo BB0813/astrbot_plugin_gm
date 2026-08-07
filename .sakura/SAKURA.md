@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 27 次
+> 累计反思 28 次
 
 ## 1. 项目简介
 
@@ -111,8 +111,8 @@ astrbot_plugin_gm/
 - 标题为“。”、“，”或信息很少时，不能依赖标题分类；必须基于正文错误文本、复现命令和代码线索检索。
 - 结构化输出校验失败只应局部修复字段，不能让明确的 `bug` / `enhancement` 被降级为 `other`，也不能导致标签为空、标题为“无建议”、可行性“无法评估”。
 - 标题带 `[bug][medium]`、`[enhancement][medium]` 可作信号，但仍需结合正文和代码验证；标题已清晰时应写“原标题可保留”或给轻量规范化版本。
-- 标签应优先匹配仓库实际标签体系；未知时给通用主标签，并列出可选标签。撤回历史接口类常用：`compatibility`、`command`、`recall`、`message-history`、`onebot`、`documentation`；私信审批类常用：`enhancement`、`group-management`、`moderation`、`permission`、`configuration`、`needs-discussion`；头衔类常用：`bug`、`command`、`title`、`onebot`、`compatibility`。
-- 重复检测要谨慎表述“暂未发现”或“疑似关联”，并给检索关键词；同命令/同主题不等于同问题。撤回类关键词：`/撤回`、`/撤回用户`、`@用户`、`get_group_msg_history`、`message_id`、`delete_msg`；头衔类关键词：`取消头衔`、`special_title`、`空格头衔`、`set_group_special_title`；解禁审批类关键词：`申请解禁`、`禁言申诉`、`私信`、`审批`、`禁我`。
+- 标签建议应覆盖主类型、模块和风险，不应只给单个 `enhancement` 或因校验失败留空。若仓库标签体系简单，至少保留主标签与核心模块；复杂功能可补 `permission`、`configuration`、`needs-discussion` 等。
+- 重复检测要谨慎表述“暂未发现”或“疑似关联”，并给检索关键词；同命令/同主题不等于同问题，只有完整用户故事一致才判重复。若分析声称“可能重复 #35”这类具体编号，必须核对该 Issue 是否同样包含“私聊申请 + 管理员审批 + 自动执行/通知”的完整流程；若只涉及解禁、禁我、管理员通知等相近主题，应标“关联/可参考”而非重复。撤回类关键词：`/撤回`、`/撤回用户`、`@用户`、`get_group_msg_history`、`message_id`、`delete_msg`；头衔类关键词：`取消头衔`、`special_title`、`空格头衔`、`set_group_special_title`；解禁审批类关键词：`申请解禁`、`禁言申诉`、`私信`、`审批`、`禁我`。
 - 信息不足时可标 `needs-info`，要求补充 AstrBot 版本、OneBot 实现与版本、插件 commit、完整命令、日志和权限；但不应掩盖明确的命令行为缺陷或功能请求。
 
 ## 6. 开发约定与注意事项
