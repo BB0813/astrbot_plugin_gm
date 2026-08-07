@@ -1,6 +1,6 @@
 # 项目记忆
 
-累计反思 22 次
+累计反思 27 次
 
 ## 仓库背景
 
@@ -12,10 +12,11 @@
 
 - 明确运行时报错、命令参数类型错误、用户反馈“更新后仍存在”时，主分类应为 `bug`；若是命令参数解析，可辅助 `command`、`parser`、`compatibility`、`needs-info`。
 - 权限/配置粒度调整（如头衔、管理、踢人权限按群独立配置）应归为 `enhancement`，不是 `other`；辅助 `configuration`、`permission`、`group-management`、`needs-discussion`，若移除旧机制需评估 `breaking-change`。
+- “被禁言/禁我用户私信申请解禁并由管理员审批”是新增审批工作流，应归为 `enhancement/feature + medium`，不是 bug/other；辅助标签可用 `group-management`、`moderation`、`permission`、`configuration`、`private-message`、`approval-flow`、`needs-discussion`。最小实现工作量中等偏低，完整可靠实现（持久化、并发、过期、多适配器）可到中等偏高。
 - `/撤回 N` 或 `/撤回 @用户 N` 因 OneBot 不支持 `get_group_msg_history` 而不可用时，核心是 `compatibility`：若请求增加本地缓存/回退，通常为 `enhancement + medium`；若只是询问提示含义/能力限制，可为 `question` 或 `documentation + low`；若文档承诺通用支持而常见环境不可用，也可视为兼容性 bug。
 - `medium` 适用于核心命令局部不可用、权限配置影响多群但非阻断、群管理命令提示成功但实际未生效。插件启动/加载失败、导入失败、装饰器注册失败、越权、误踢/误撤大量消息等应考虑 `high`。
-- 标题中 `[bug][medium]`、`[enhancement][medium]` 是信号但需结合正文和代码。标题为空、“。”等无意义时必须改写；标题字段不能写“无建议”。若原标题已清晰，应写“可保留”或给轻量规范化版。
-- 标签推荐要贴合模块和根因；未知标签体系时也应给通用候选并注明需映射，不能留空。撤回历史接口类常用：`enhancement`/`question`/`documentation`、`compatibility`、`command`、`recall`、`message-history`、`onebot`、`group-management`、`needs-info`。
+- 标题中 `[bug][medium]`、`[enhancement][medium]` 是信号但需结合正文和代码。标题为空、“。”等无意义时必须改写；标题字段不能写“无建议”。若原标题已清晰，应写“可保留”或给轻量规范化版。涉及“禁言/禁我申请解禁”时标题要覆盖两种状态，不能只写禁言。
+- 标签推荐要贴合模块和根因；未知标签体系时也应给通用候选并注明需映射，不能留空。功能审批流至少给 `enhancement` + 模块/权限/配置/讨论候选；头衔 bug 至少给 `bug`、`command`、`group-management`、`title/special-title`、`onebot/compatibility`。撤回历史接口类常用：`enhancement`/`question`/`documentation`、`compatibility`、`command`、`recall`、`message-history`、`onebot`、`group-management`、`needs-info`。
 - 不应因结构化输出字段校验失败，就把分类降为 `other`、标签置空、可行性写“无法评估”、标题写“无建议”。格式失败应局部修复，保留可判断信息。
 
 ### 2. AstrBot 命令参数与撤回逻辑
@@ -39,6 +40,7 @@
 - 配置边界：`0` 可能表示关闭且必须能覆盖全局，不能被 `dict.get`/假值判断误当缺失；空列表是覆盖为空还是回退全局，`None`、缺失 key、空字符串要区分；旧配置迁移和兼容读取不能忽略。
 - 群管理 API “返回成功但实际未生效”（取消头衔、设管理员、踢人/禁言、改群名片等）按链路排查：命令解析 → 权限判断 → API 参数 → 适配器兼容 → API 返回值 → 状态回读 → 用户提示。OneBot/NapCat/Lagrange/go-cqhttp 对 `special_title=""`、`duration=-1/0/不传`、返回值和缓存刷新语义可能不同。
 - `/取消头衔` 等不能仅根据 action 返回值提示成功；需考虑机器人是否管理员/群主、权限是否高于目标、目标是否群主、QQ 限制、客户端缓存/延迟。可用 `get_group_member_info` 回读确认，但提示回读也可能受缓存和字段差异影响。
+- 头衔清空要严格区分 `special_title=""`、`" "`、空白字符、`None`、字段缺失及 `duration=-1/0/不传`；`strip()` 会把空格头衔误判为已清空。`special_title=" "` 兜底本质是兼容空白头衔，不是恢复默认，不能提示“取消成功”。代码修复可能小，但 NapCat/Lagrange/go-cqhttp 等多适配器验证成本中等，可考虑降级提示或兼容开关。
 - 权限类改动必须测试：全局配置、按群覆盖、未配置回退、空列表/0 覆盖、多群隔离、普通用户不得获得踢人/管理/头衔权限、旧配置升级后行为。
 
 ### 4. PR/代码审查经验
@@ -51,11 +53,19 @@
 - 针对此仓库固定搜索 async generator 风险：搜索 `async def`、`yield`、同一函数内 `return <非空值>`、所有被 `await` 的 helper 是否误变 async generator。不要完全依赖 PR 描述的 AST 扫描，应抽查或验证。
 - approve 可以，但若缺少真实 AstrBot 加载和命令验证，尤其涉及框架消息发送方式变化，评分不宜给满分；可评为“修复方向正确、风险较低，但建议补充加载与无权限命令测试”。
 
-### 5. 重复检测与流程注意
+### 5. 私聊申请与审批工作流
+
+- 私聊触发群管理动作时，私聊事件通常没有 `group_id`：必须要求用户提供群号，或复用/维护禁言记录；还要校验申请人确属目标群、确处于群禁言或插件内部“禁我”状态。群禁言与插件内部禁用可能是两套状态，解禁接口和存储需先核对，不能混为一谈。
+- 审批功能要设计申请 ID/引用回复/专用命令（如 `同意 #123`、`驳回 #123 原因`），不要只靠“同意/驳回”关键词。需处理多管理员并发、重复审批、重复申请、超时过期、重启恢复和幂等。
+- 自动解禁是敏感操作：审批者必须是插件管理员或被授权者；若在管理员群审批，也要校验发送者 QQ。调用已有 `_unmute_member`、`_send_private_msg`、`_send_group_text` 等 helper，处理 bot 不在群/无权限、用户已解禁/不在群、私信或群通知发送失败。申请说明可能含隐私，只转发到配置的可信管理员或管理群。
+- 新增审批流配置需同步 `_conf_schema.json`、README、帮助命令和默认配置，如启用开关、管理员 QQ/管理群、有效期、是否群内通知。可参考 `pending_join_requests` 模式，但不要假设其可直接适用于私聊解禁。
+
+### 6. 重复检测与流程注意
 
 - 重复检测不能只依赖标题。参数错误搜：`count(int)=0`、`参数 count 类型错误`、`撤回`、`recall_cmd`、`recall_user_cmd`、`filter.command`。撤回自身搜：`/撤回 1`、`撤回指令本身`、`上一条消息`、`get_group_msg_history`、`message_id`。
 - 历史接口/兼容性搜：`get_group_msg_history`、`group_msg_history`、`消息历史`、`当前 OneBot 实现不支持`、`引用消息撤回`、`按用户撤回`、`@用户`、`message-history`、`delete_msg`。
-- 按群权限/配置搜：`按群配置`、`群独立`、`权限`、`踢人`、`管理`、`头衔`、`禁言阈值`、`mute_kick_threshold`、`group_overrides`、`group_admins`、`配置显示`；头衔问题搜：`取消头衔`、`special_title`、`set_group_special_title`、`duration`、`NapCat`、`成功但没生效`。
+- 按群权限/配置搜：`按群配置`、`群独立`、`权限`、`踢人`、`管理`、`头衔`、`禁言阈值`、`mute_kick_threshold`、`group_overrides`、`group_admins`、`配置显示`；头衔问题搜：`取消头衔`、`special_title`、`set_group_special_title`、`空格头衔`、`恢复默认头衔`、`duration`、`NapCat`、`Lagrange`、`go-cqhttp`、`#111`、`成功但没生效`。
+- 申请解禁/审批流搜：`申请解禁`、`解禁申请`、`禁言申诉`、`禁我`、`私信`、`审批`、`管理员审批`、`解除禁言`、`set_group_ban`。重复判断要比较完整用户故事（私聊申请→管理员审批→自动解禁→通知），主题词相近只应标关联。
 - “未检测到重复”在缺少历史 Issue 列表时只能写“暂未发现”，并列出建议检索关键词；同命令/同模块但症状、触发路径、修复点不同的 Issue 应标关联而非重复。
 - 对信息不足的 Issue，仍应给有条件的可行性判断：说明需要补充哪些证据，以及常见代码结构下的预估工作量与风险。
 - 对“版本已更新仍存在”的问题，应追踪最近相关 commit/PR：可能是修复方向错误、覆盖入口不全、插件目录/缓存未更新，不能仅重复原修复建议。
