@@ -16,7 +16,7 @@ import os
 import re
 import time
 import base64
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 
 try:
@@ -60,6 +60,13 @@ class GroupAdminPlugin(Star):
         # spam_records[(group_id, user_id)] -> [timestamp, ...]
         # 仅内存，进程重启清空（与参考插件行为一致）
         self.spam_records = defaultdict(list)
+
+        # 本地群消息缓存（#117 #118），用于在不支持 get_group_msg_history 的
+        # OneBot 实现上，提供 /撤回 @用户 N 与 /撤回 N 的回退数据源。
+        # 结构：recent_messages[group_id] -> deque[{"message_id", "user_id"}, ...]
+        # 仅记录本进程启动后经过 on_group_message 的消息，重启前历史不可恢复。
+        # 使用普通 dict + setdefault 显式创建，避免 defaultdict 工厂被「in 检查」类用法意外触发。
+        self.recent_messages = {}
 
     # ===================== 通用 IO =====================
 
@@ -475,7 +482,11 @@ class GroupAdminPlugin(Star):
 
     async def _clear_group_title(self, event: AstrMessageEvent, group_id: str, qq: str) -> bool:
         """清空群头衔。每步调用后用 get_group_member_info 读回 title 字段校验
-        是否真的清空，避免 OneBot 实现返回成功但实际未清空（#111）。"""
+        是否真的清空，避免 OneBot 实现返回成功但实际未清空（#111 #119）。
+
+        校验严格判断 title 是否为空字符串 / 字段缺失，不能 strip 后判空——
+        否则单空格 " " 会被误判为已清空，导致实际仍存在空格头衔（#119）。
+        """
         async def _verify() -> bool:
             info = await self._execute_action(
                 event, "get_group_member_info", return_raw=True,
@@ -483,8 +494,11 @@ class GroupAdminPlugin(Star):
             )
             if isinstance(info, dict):
                 data = info.get("data") or info
-                after = str(data.get("title") or data.get("special_title") or "").strip()
-                return after == ""
+                after = data.get("title")
+                if after is None:
+                    after = data.get("special_title")
+                # 严格判空：必须是空字符串或字段缺失；空格、不可见字符均视为未清空
+                return after is None or after == ""
             return False
 
         # 1) duration=-1（部分实现要求的清空语义）
@@ -502,7 +516,9 @@ class GroupAdminPlugin(Star):
         )
         if ok2 and await _verify():
             return True
-        # 3) 单空格（兼容不接受空字符串的旧实现）
+        # 3) 单空格兼容兜底：旧版 OneBot 拒绝空字符串时设置 " "。
+        #    但需要校验：若 OneBot 实际把 " " 写回去了，#119 报告就是这种场景，
+        #    此时不能视为成功；只有真正被解释为空（接口忽略空白）才算清空。
         ok3 = await self._execute_action(
             event, "set_group_special_title",
             group_id=group_id, user_id=qq, special_title=" ",
@@ -510,6 +526,28 @@ class GroupAdminPlugin(Star):
         if ok3 and await _verify():
             return True
         return False
+
+    # ===================== 群消息本地缓存（#117 #118） =====================
+
+    def _record_recent_message(self, group_id: str, message_id, user_id):
+        """记录一条群消息到本地缓存，供 /撤回 N / /撤回 @用户 N 在
+        OneBot 不支持 get_group_msg_history 时作为回退数据源（#117 #118）。"""
+        if not group_id or not message_id or user_id is None:
+            return
+        bucket = self.recent_messages.setdefault(str(group_id), deque(maxlen=100))
+        bucket.append(
+            {"message_id": str(message_id), "user_id": str(user_id)}
+        )
+
+    def _get_recent_messages_for_recall(self, group_id: str) -> list:
+        """返回本地缓存中该群的最近消息列表，按从旧到新顺序排列
+        （与 OneBot get_group_msg_history 的 messages 字段方向一致）。"""
+        if not group_id:
+            return []
+        cache = self.recent_messages.get(str(group_id))
+        if not cache:
+            return []
+        return list(cache)
 
     async def _set_group_card(self, event: AstrMessageEvent, group_id: str, qq: str, card: str):
         return await self._execute_action(event, "set_group_card",
@@ -1766,7 +1804,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("撤回成功" if ok else "撤回失败")
             return
 
-        # 2) @用户 + N（#110）
+        # 2) @用户 + N（#110 #117）
         if target_qq:
             n = max(1, min(count or 1, 50))
             history = await self._execute_action(
@@ -1776,9 +1814,14 @@ class GroupAdminPlugin(Star):
             msgs = []
             if isinstance(history, dict):
                 msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+            # 历史接口不可用时回退到本地缓存（#117）
+            used_cache = False
+            if not msgs:
+                msgs = self._get_recent_messages_for_recall(group_id)
+                used_cache = bool(msgs)
             if not msgs:
                 yield event.plain_result(
-                    "当前 OneBot 实现不支持按用户撤回（缺少 get_group_msg_history）。\n"
+                    "当前 OneBot 实现不支持按用户撤回（缺少 get_group_msg_history，且插件本地缓存为空）。\n"
                     "请使用 /撤回 + 引用消息 撤回指定消息。"
                 )
                 return
@@ -1790,13 +1833,14 @@ class GroupAdminPlugin(Star):
                     recalled += 1
             if recalled:
                 if self.get_group_setting(group_id, "show_recall_notice", True):
-                    await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息"))
+                    suffix = "（来自本地缓存）" if used_cache else ""
+                    await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息{suffix}"))
                 yield event.plain_result(f"撤回成功（{recalled} 条）")
             else:
                 yield event.plain_result("撤回失败，未找到该用户的可撤回消息")
             return
 
-        # 3) 仅 N：撤回最近 N 条（#109，不撤回指令本身）
+        # 3) 仅 N：撤回最近 N 条（#109，不撤回指令本身；#118 提供本地缓存回退）
         if count > 0:
             history = await self._execute_action(
                 event, "get_group_msg_history", return_raw=True,
@@ -1805,9 +1849,13 @@ class GroupAdminPlugin(Star):
             msgs = []
             if isinstance(history, dict):
                 msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+            used_cache = False
+            if not msgs:
+                msgs = self._get_recent_messages_for_recall(group_id)
+                used_cache = bool(msgs)
             if not msgs:
                 yield event.plain_result(
-                    "撤回失败：当前 OneBot 实现不支持 get_group_msg_history。\n"
+                    "撤回失败：当前 OneBot 实现不支持 get_group_msg_history，且插件本地缓存为空。\n"
                     "请使用 /撤回 + 引用消息 撤回指定消息。"
                 )
                 return
@@ -1824,7 +1872,8 @@ class GroupAdminPlugin(Star):
                     recalled += 1
             if recalled:
                 if self.get_group_setting(group_id, "show_recall_notice", True):
-                    await self._send(event, self._build_text(f"已撤回 {recalled} 条消息"))
+                    suffix = "（来自本地缓存）" if used_cache else ""
+                    await self._send(event, self._build_text(f"已撤回 {recalled} 条消息{suffix}"))
                 yield event.plain_result(f"撤回成功（{recalled} 条）")
             else:
                 yield event.plain_result("撤回失败，未找到可撤回消息")
@@ -2214,6 +2263,11 @@ class GroupAdminPlugin(Star):
         # 发言计数（#29）
         self._increment_message_count(group_id, user_id)
 
+        # 本地缓存：用于 /撤回 N / /撤回 @用户 N 在不支持 get_group_msg_history 时回退（#117 #118）
+        msg_id = raw.get("message_id")
+        if msg_id:
+            self._record_recent_message(group_id, msg_id, user_id)
+
         # 群违规检测（合并自参考插件，#19 + 图片/刷屏/骂人/广告/链接/群号推广）
         await self._moderation_dispatch(event, raw, group_id, user_id)
 
@@ -2331,6 +2385,14 @@ class GroupAdminPlugin(Star):
         group_id = str(raw.get("group_id", ""))
         if not group_id:
             return
+
+        # 本地缓存：记录 bot 自身发言，以便 /撤回 N / /撤回 @bot N 也能回退（#117 #118）。
+        # 与自动关键词撤回无关，所有群组都需要写入。
+        bot_msg_id = raw.get("message_id")
+        bot_user_id = raw.get("user_id") or raw.get("self_id")
+        if bot_msg_id and bot_user_id:
+            self._record_recent_message(group_id, bot_msg_id, bot_user_id)
+
         enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
         if not enabled:
             return
