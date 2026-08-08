@@ -95,7 +95,7 @@
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
         "items": {},
-        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation。也可在群内用 /设置群配置 key value 动态设置。",
+        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation、max_message_history、batch_max_count。也可在群内用 /设置群配置 key value 动态设置。",
         "default": {}
     },
     "api_type": {
@@ -279,5 +279,17 @@
         "type": "bool",
         "hint": "推荐按群覆盖。",
         "default": true
+    },
+    "max_message_history": {
+        "description": "撤回消息历史记录条数（每群内存缓存）",
+        "type": "int",
+        "hint": "用于 /消息列表 与 /撤回 的编号/数量撤回。仅记录进程启动后经过监听的消息，重启前历史不可恢复。",
+        "default": 50
+    },
+    "batch_max_count": {
+        "description": "单次批量撤回最多条数",
+        "type": "int",
+        "hint": "按数量 / 按编号撤回的单次上限（/撤回自身 N 同样受此限制）。",
+        "default": 20
     }
 }
