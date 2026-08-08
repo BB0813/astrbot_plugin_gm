@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 55 次
+> 累计反思 60 次
 
 ## 1. 项目简介
 
@@ -171,6 +171,28 @@
 - **撤回命令族五处同步清单扩展为七处**（涉及多媒体转写层）：`main.py` + README + 帮助命令 + 配置 schema + CHANGELOG + **STT 配置文件/字段**（如 AstrBot 框架 STT 配置项的位置） + **误伤率文档说明**（README 风险提示）。
 - **重复检测关键词**（新增）：`voice`、`语音`、`stt`、`speech-to-text`、`transcrib`、`whisper`、`asr`、`voice_violation`、`voice_recall`、`音频`、`语音转文字`、`撤回语音`。
 - **关联追溯**：与本仓库现有 `_check_image`（图片 AI 审核）模式同源（多模态内容审核），可作为同类扩展参考。
+
+### 4.17 Issue #130 权限模型重构（移除 plugin_admins，自动继承群原生身份）
+
+- 维护者自提"将插件管理员改为群管/群主自动继承，取消 plugin_admins 设置"。属权限模型重构 + 接口删除（breaking change）。
+- 分类 `enhancement` + `breaking-change` + `medium`：删除既有配置项是用户可见 breaking change；横切所有管理类命令但有迁移路径，绝不可降 low。
+- 核心标签：`enhancement` + `breaking-change` + `permission`/`permission-model`（建议新建）+ `configuration` + `group-management` + `onebot` + `bot-role`/`sender-role`（建议新建）+ `cleanup`/`deprecation`（建议新建）+ `command`。`needs-discussion` 中高，`needs-info` ≤0.25，`help wanted` ≤0.1。
+- sender 角色 vs 配置项本质差异：① 私聊无 `group_id` 降级 ② 匿名消息 `sender.role` 不准 ③ bot 自身角色降级 ④ `get_group_member_info` 缓存策略 ⑤ 跨适配器字段（NapCat/Lagrange/go-cqhttp）。
+- 必查 6 项：① 待删除配置项影响范围 ② 跨适配器 API 差异 ③ 缓存与失效 ④ 权限提升风险审计 ⑤ 配置迁移路径 ⑥ API 失败兜底（拒绝 vs 放行）。
+- 五处同步清单扩展为六处：`main.py` + `_conf_schema.json` + README + 帮助命令 + CHANGELOG + **迁移指南**。
+- 同类配置项扫描：分析时主动检查 `title_admins`/`group_admin_admins`/`kick_admins` 是否同步迁移。
+- 建议新标签：`bot-role`/`sender-role`、`permission-model`、`deprecation`（按仓库习惯映射或注明"需维护者确认新增"）。
+
+### 4.18 Issue #129 加群申请拒绝自定义理由（双重需求 + 跨适配器）
+
+- 维护者自提加群申请拒绝时支持自定义理由（**填写**或**配置**两种路径并存）。属 owner-driven UX 增强，与 #57（引用回复同意/拒绝）同工作流扩展。
+- 分类 `enhancement` + `medium`：不可降 low（涉及代为拒绝加群申请，存在误拒/理由不当风险）。
+- 核心标签：`enhancement` + `group-management` + `join-request`/`join-approval`（建议新建）+ `configuration` + `onebot` + `ux` + `needs-info`（中高：OneBot 适配器版本）+ `needs-discussion`（中：填写策略）+ `related` 指向 #57。`help wanted` ≤0.05。
+- OneBot `reason` 字段跨适配器矩阵（建议沉淀）：NapCat ≤10 字符；Lagrange ≤10-20 字符；go-cqhttp 部分 ≤30 字符、部分不限制；空串/None/特殊字符处理各实现可能不同。建议 schema 暴露 `join_reject_reason_max_length` 避免硬编码。
+- 双重路径：① 填写（引用回复时输入）→ 解析引用 + 剥离关键词 + 长度截断 + 敏感词过滤；② 配置（全局默认 + 按群覆盖 + 模板列表）→ 五处同步同 `get_group_setting` 模式。复用 `_handle_group_request` 入口避免并行通道。
+- 工作量陷阱：看似 60-100 行，实际 80-120 行（解析 + 截断 + L2660/L2709/L2721 三调用点同步 + 五处配置 + 同意侧 `reason` 透传校验）。
+- 高频改动点沉淀：`pending_join_requests` + `_handle_group_request` 是高频改动点（#57 + #129 已两次扩展），未来可能再有"同意附言"/"批量审批"/"审批历史"。建议固化调用点地图。
+- **未来防御（记忆幻觉警告）**：引用项目记忆 § 编号前必须确认存在（本次反思曾编造"§4.13 UX 增强低估"——§4.13 实际是撤回默认行为/按用户指定编号 Issue #124 而非 UX 估算）。
 
 ## 5. Issue 分析与标签经验（高层规则，详见 memory.md）
 
