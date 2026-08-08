@@ -1,10 +1,34 @@
 # 项目记忆
 
-累计反思 43 次
+累计反思 49 次
 
 ## 仓库背景
 
 仓库 `mjy1113451/astrbot_plugin_gm` 是 AstrBot 群管理类插件，Issue/PR 常涉及命令解析、撤回、群管理权限、按群配置、OneBot 适配器兼容、配置 schema 与 README 同步。Issue 中可能出现旧插件名或相近插件名（如 `astrbot_plugin_group_admin`），分析时需确认与当前仓库/插件注册名是否一致，避免把推断写成事实。
+
+- **"删除功能"类 Issue 不应自动归 medium**：维护者本人提交的、纯减法性质的功能裁剪，本质风险低于功能新增。优先级判断应考虑"主动减法 + owner 自己实施 + 无横切关注点"组合 → low 而非 medium（除非涉及横切关注点如撤回/缓存）。
+- **`breaking-change` 应作为独立标签**：删除既有命令语法、修改既有命令参数语义、修改既有命令返回值都属 breaking change，应专门标注而非埋在描述中；配合 `documentation`、`command`、`recall`、`parser` 形成"删减类 issue 标配"。
+- **`/消息列表` 与 `/撤回 编号` 强耦合**：删除 `/撤回 编号` 后，`/消息列表` 作为独立命令的存在价值显著下降，应在分析中显式提醒依赖解耦。
+- **`recall_cmd` 是高频改动点**：本仓库撤回类 PR 多次出现（语义变更、批量撤回、缓存兜底、行号解析、接口收敛），#126 再次印证 `recall_cmd` 是"复杂函数集中地"，未来分析应优先关注 Path 分支完整性、对称性、本地缓存写入、帮助文本同步。
+- **撤回类 Issue 改动清单（五处同步）**：main.py 代码 + README + 帮助命令 + 配置 schema + CHANGELOG，每条撤回类改动都需逐项核对，不可遗漏。
+- **配置 schema 字段语义缩窄不可糊弄**：分支删除后字段（如 `batch_max_count`）作用范围缩窄时，必须显式列为改动点，必要时建议重命名，不能用"措辞微调"糊弄。
+- **删减类 issue 检查清单**与新增类相反：调用点清空、帮助/README/docstring 同步、CHANGELOG/公告、剩余路径边界、用户迁移路径；不能套用新增类的检查模板。
+- **"撤回命令族五处同步清单"应固化为强制输出模板**（main.py + README + 帮助 + schema + CHANGELOG），下次遇到 `/撤回` 相关 issue 时直接套用。
+
+### 头衔类 Issue 标准分析模板（#125 案例）
+
+- **触发场景**：`/取消头衔 @用户` 提示成功但头衔仍存在（典型"API 返回成功但实际未生效"）。
+- **必查项**：① Bot 在该群角色（管理员/群主/普通成员）② 目标用户身份（是否群主）③ OneBot 实现版本（NapCat/Lagrange/go-cqhttp）④ AstrBot/插件版本与 commit ⑤ 完整执行日志 ⑥ 最近配置变更 ⑦ `_extract_at_qq` 解析 ⑧ `special_title` 传参（`""` vs `" "` vs 空白）⑨ 是否 `get_group_member_info` 回读。
+- **必给标签**：`bug` + `command` + `group-management` + `title`/`special-title` + `onebot`/`compatibility` + `needs-info`（主分类 0.90+，模块标签 0.80+，`needs-info` 0.95+）。
+- **可行性**：中等条件性（低风险小改动=补回读；中等风险=多适配器兼容修复）。
+- **典型根因**：① API 返回成功但缓存未刷新 ② `special_title` 传 `""` 被某些适配器忽略 ③ Bot 非管理员/群主但未校验 ④ 目标为群主，QQ 限制无法修改 ⑤ `strip()` 误判空白头衔已清空。
+- **优先级**：`medium`（单群可控）或 `high`（权限校验缺失时越权风险）。
+
+### "提示成功但实际未生效"类 Issue 通用模式
+
+- 分类必为 `bug`。
+- 根因排查链路：命令解析→权限判断→API 参数→适配器兼容→API 返回值→**状态回读**→用户提示。
+- 修复方向：补 `get_group_member_info` 回读 + 明确传参语义 + 适配器差异处理。
 
 ## 反模式（最关键警示）
 
@@ -26,8 +50,8 @@
 - "被禁言/禁我用户私信申请解禁并由管理员审批"是新增审批工作流，应归为 `enhancement/feature + medium`，不是 bug/other；辅助 `group-management`、`moderation`、`permission`、`configuration`、`private-message`、`approval-flow`、`needs-discussion`。**medium 而非 low 的关键理由**：涉及代为执行群管理动作的敏感操作，存在越权/误批风险。
 - `/撤回 N` 因 OneBot 不支持 `get_group_msg_history` 而不可用时，核心是 `compatibility`：本地缓存/回退通常为 `enhancement + medium`；仅询问提示/能力限制可为 `question` 或 `documentation + low`；文档承诺通用支持而常见环境不可用也可视为兼容性 bug。
 - `medium` 适用于核心命令局部不可用、权限配置影响多群但非阻断、群管理命令提示成功但实际未生效。插件启动/加载失败、导入失败、装饰器注册失败、越权、误踢/误撤大量消息等应考虑 `high`。
-- 标题中 `[bug][medium]`、`[enhancement][medium]` 是信号但需结合正文和代码。涉及"禁言/禁我申请解禁"时标题要覆盖两种状态；涉及批量撤回要覆盖普通与按用户两种形式。
-- **重复检测措辞模板**：无历史列表时**写"暂未发现"并列出建议检索关键词**，"未检测到重复"/"无重复"/"可能是 #1 的重复"均被明令禁止；后者属高风险判断（#1 通常是初始化 Issue），必须给依据或降级为"暂未发现+检索词"。
+- 标题中 `[bug][medium]`、`[enhancement][medium]` 是信号但需结合正文和代码。涉及"禁言/禁我申请解禁"时标题要覆盖两种状态；涉及批量撤回要覆盖普通与按用户两种形式；涉及删除命令用法标题要明确"删除"动作与具体被删路径（如"按编号撤回"）。
+- **重复检测措辞模板**：无历史列表时**写"暂未发现"并列出建议检索关键词**，"未检测到重复"/"无重复"/"可能是 #1 的重复"均被明令禁止；后者属高风险判断（#1 通常是初始化 Issue），必须给依据或降级为"暂未发现+检索词"。撤回类建议关键词：`recall`、`撤回`、`编号`、`按编号`、`@用户`、`recall_cmd`、`message_list`、`接口收敛`、`breaking`。头衔类建议关键词：`取消头衔`、`special_title`、`头衔清除`、`Bot 权限`、`回读`。
 - **标签完整性原则**：分类标签外必须主动映射模块标签（`recall`、`command`、`parser`、`message-history`、`group-management`、`onebot`、`title`/`special-title`）和决策标签（`needs-discussion`、`needs-info`）。`help wanted` 置信度：已有明确 owner/改法/工作量时不宜给高；`good first issue` 仅适合"明确小重构/纯文档/小功能"，增强类（含设计决策/兼容性考量）通常不合适。
 - **"good first issue"慎用**：仅适合"明确小重构/纯文档/小功能"；增强类涉及设计决策/兼容性/横切关注点时置信度应 ≤0.15。
 - **行为变更 ≠ 风险**：用户主动请求的语义修改（如下划线中的"撤回数量 5 → 编号 5"）是需求不是回归，"风险"应聚焦实现层面副作用（缓存一致性、对称性、文档同步、CHANGELOG）。
