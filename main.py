@@ -161,7 +161,6 @@ class GroupAdminPlugin(Star):
             "notify_on_violation": True,
             # ====== 撤回消息历史（对齐 astrbot_plugin_batchrecall，修复 #122） ======
             "max_message_history": 50,
-            "batch_max_count": 20,
         }
 
     def load_config(self) -> dict:
@@ -605,7 +604,7 @@ class GroupAdminPlugin(Star):
         return ""
 
     _GM_COMMAND_NAMES = (
-        "消息列表", "撤回自身", "撤回", "设置图片禁言时长", "设置刷屏禁言时长",
+        "撤回自身", "撤回", "设置图片禁言时长", "设置刷屏禁言时长",
         "设置骂人禁言时长", "设置广告禁言时长", "设置链接禁言时长", "设置群号推广禁言时长",
         "添加骂人关键词", "删除骂人关键词", "查看骂人关键词", "切换骂人检测模式",
         "添加白名单用户", "删除白名单用户", "查看白名单", "查看违规统计",
@@ -1981,14 +1980,12 @@ class GroupAdminPlugin(Star):
             msg += f"\n失败: {', '.join(bad_list)}"
         yield event.plain_result(msg)
 
-    @filter.command("撤回", "撤回消息（引用 / @用户 N / N / 编号...）")
+    @filter.command("撤回", "撤回消息（/撤回 + 引用消息 / /撤回 @用户 N / /撤回 N）")
     async def recall_cmd(self, event: AstrMessageEvent):
-        """统一分发器（#109 #110 #117 #118，功能对齐 astrbot_plugin_batchrecall，修复 #122）：
-        - 引用消息          -> 撤回引用消息
-        - @用户 + N         -> 撤回该用户最近 N 条
-        - @用户 + 编号...    -> 撤回该用户指定编号消息
-        - N                -> 撤回最近 N 条（不含指令本身，最多 50）
-        - 编号...（空格/逗号）-> 按 /消息列表 的编号撤回指定消息
+        """统一分发器（#109 #110 #117 #118，修复 #122）：
+        - 引用消息 -> 撤回引用消息
+        - @用户 + N -> 撤回该用户最近 N 条
+        - 仅有 N -> 撤回最近 N 条（不含指令本身，最多 50）
         """
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -2007,10 +2004,6 @@ class GroupAdminPlugin(Star):
         tail = self._extract_command_tail(self._extract_text(raw), ("撤回",))
         tail = re.sub(r"@\d+", "", tail)  # 去掉 @QQ 防止 QQ 号被当作编号
         all_numbers = [int(x) for x in re.findall(r"\d+", tail)]
-        has_comma = ("," in tail) or ("，" in tail)
-        has_space_sep = bool(re.search(r"\d+\s+\d+", tail))
-
-        max_count = max(1, int(self.get_group_setting(group_id, "batch_max_count", 20) or 20))
 
         # 1) 引用消息优先（保持原有语义）
         if reply_id:
@@ -2020,42 +2013,8 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("撤回成功" if ok else "撤回失败")
             return
 
-        # 2) @用户：按数量 或 按编号（#110 #117）
+        # 2) @用户 + N：撤回该用户最近 N 条（#110 #117）
         if target_qq:
-            if len(all_numbers) > 1 or has_comma or has_space_sep:
-                numbers = sorted(set(all_numbers))
-                if len(numbers) > max_count:
-                    numbers = numbers[:max_count]
-                snapshot = await self._get_history_snapshot(event, group_id, self_msg_id)
-                if not snapshot:
-                    yield event.plain_result(
-                        "当前没有可用于按编号撤回的消息记录（本地历史为空且 OneBot 不支持 get_group_msg_history）。\n"
-                        "请使用 /撤回 + 引用消息 撤回指定消息。"
-                    )
-                    return
-                target_msgs = [m for m in snapshot if m[3] == str(target_qq)]
-                success, failed_msgs, invalid_nums = 0, [], []
-                for num in numbers:
-                    idx = num - 1
-                    if 0 <= idx < len(target_msgs):
-                        ok, err = await self._do_recall(event, target_msgs[idx][0])
-                        if ok:
-                            success += 1
-                            self._remove_message_from_history(group_id, target_msgs[idx][0])
-                        elif "已撤回" not in err:
-                            failed_msgs.append(f"[{num}]{err}")
-                        else:
-                            self._remove_message_from_history(group_id, target_msgs[idx][0])
-                    else:
-                        invalid_nums.append(str(num))
-                msg = f"已成功撤回用户 {target_qq} 的 {success} 条消息。"
-                if invalid_nums:
-                    msg += f"\n无效编号: {', '.join(invalid_nums)}"
-                if failed_msgs:
-                    msg += f"\n失败: {', '.join(failed_msgs[:5])}"
-                yield event.plain_result(msg)
-                return
-            # 按数量撤回该用户最近 N 条（保持原有语义）
             n = all_numbers[0] if all_numbers else 1
             n = max(1, min(n, 50))
             snapshot = await self._get_history_snapshot(event, group_id, self_msg_id)
@@ -2085,47 +2044,7 @@ class GroupAdminPlugin(Star):
                 yield event.plain_result("撤回失败，未找到该用户的可撤回消息")
             return
 
-        # 3) 按编号撤回（多个编号 / 逗号分隔 / 空格分隔）
-        if len(all_numbers) > 1 or has_comma or has_space_sep:
-            numbers = sorted(set(all_numbers))
-            if len(numbers) > max_count:
-                numbers = numbers[:max_count]
-            snapshot = await self._get_history_snapshot(event, group_id, self_msg_id)
-            if not snapshot:
-                yield event.plain_result(
-                    "当前没有可用于按编号撤回的消息记录（本地历史为空且 OneBot 不支持 get_group_msg_history）。\n"
-                    "请发送 /消息列表 查看编号，或使用 /撤回 + 引用消息 撤回指定消息。"
-                )
-                return
-            success, failed_msgs, invalid_nums = 0, [], []
-            recalled_ids = []
-            for num in numbers:
-                idx = num - 1
-                if 0 <= idx < len(snapshot):
-                    mid = snapshot[idx][0]
-                    if mid in recalled_ids:
-                        continue
-                    recalled_ids.append(mid)
-                    ok, err = await self._do_recall(event, mid)
-                    if ok:
-                        success += 1
-                        self._remove_message_from_history(group_id, mid)
-                    elif "已撤回" not in err:
-                        failed_msgs.append(f"[{num}]{err}")
-                    else:
-                        self._remove_message_from_history(group_id, mid)
-                else:
-                    invalid_nums.append(str(num))
-            valid_nums = ', '.join(str(x) for x in numbers if str(x) not in invalid_nums)
-            msg = f"已成功撤回 {success} 条消息（编号: {valid_nums}）。"
-            if invalid_nums:
-                msg += f"\n无效编号: {', '.join(invalid_nums)}"
-            if failed_msgs:
-                msg += f"\n失败: {', '.join(failed_msgs[:5])}"
-            yield event.plain_result(msg)
-            return
-
-        # 4) 仅数量：撤回最近 N 条（#109，不撤回指令本身；#118 本地历史兜底）
+        # 3) 仅数量：撤回最近 N 条（#109，不撤回指令本身；#118 本地历史兜底）
         if all_numbers:
             n = all_numbers[0]
             if n <= 0:
@@ -2161,62 +2080,17 @@ class GroupAdminPlugin(Star):
                 yield event.plain_result("撤回失败，未找到可撤回消息")
             return
 
-        # 5) 用法提示
+        # 4) 用法提示
         yield event.plain_result(
             "用法：\n"
             "/撤回 + 引用消息：撤回引用消息\n"
             "/撤回 @用户 N：撤回该用户最近 N 条\n"
-            "/撤回 N：撤回最近 N 条（最多 50，不含指令本身）\n"
-            "/撤回 编号...：按编号撤回（如：撤回 1 3 5 或 1,3,5）\n"
-            "发送 /消息列表 可查看消息编号"
+            "/撤回 N：撤回最近 N 条（最多 50，不含指令本身）"
         )
-
-    @filter.command("消息列表", "显示最近消息列表（/消息列表 [显示数量]）")
-    async def message_list_cmd(self, event: AstrMessageEvent):
-        """显示最近消息列表（对齐 astrbot_plugin_batchrecall，修复 #122）。
-        编号 1 为本消息列表自身，历史消息从编号 2 开始。"""
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        group_id = str(raw.get("group_id"))
-        if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
-            yield event.plain_result("只有群管理员或群主可执行此操作")
-            return
-
-        current_msg_id = raw.get("message_id")
-        tail = self._extract_command_tail(self._extract_text(raw), ("消息列表",))
-        nums = re.findall(r"\d+", tail)
-        show_count = int(nums[0]) if nums else 10
-        show_count = max(1, min(show_count, self.max_history - 1))
-
-        snapshot = await self._get_history_snapshot(event, group_id, current_msg_id)
-        if not snapshot:
-            yield event.plain_result("当前没有可显示的消息记录。请先发几条消息后再试。")
-            return
-
-        display_msgs = snapshot[:show_count]
-        total = len(snapshot) + 1  # +1 为本消息列表自身
-        list_text = f"最近消息（共 {total} 条，显示 {len(display_msgs) + 1} 条）：\n"
-        list_text += "格式: [编号] 发送者: 内容\n"
-        list_text += "─" * 25 + "\n"
-        list_text += "[1] 🤖 机器人: （本消息列表）\n"
-        for offset, (msg_id, content, msg_time, sender_id, sender_name, is_bot) in enumerate(display_msgs, 2):
-            name_prefix = "🤖 " if is_bot else ""
-            display_name = sender_name[:8] + ".." if len(sender_name) > 8 else sender_name
-            list_text += f"[{offset}] {name_prefix}{display_name}: {content}\n"
-        list_text += "─" * 25 + "\n"
-        list_text += "使用方式：\n"
-        list_text += "• /撤回 编号...：撤回指定编号消息（如：撤回 2 5）\n"
-        list_text += "• /撤回 @用户 编号...：撤回指定用户的编号消息\n"
-        list_text += "• /撤回 N：撤回最近 N 条\n"
-        list_text += "• /撤回自身 N：仅撤回机器人最近 N 条\n"
-        list_text += "• 引用消息 + /撤回：撤回被引用的消息"
-        yield event.plain_result(list_text)
 
     @filter.command("撤回自身", "撤回机器人最近发送的消息（/撤回自身 N）")
     async def recall_self_cmd(self, event: AstrMessageEvent):
-        """撤回机器人自身发送的消息（对齐 astrbot_plugin_batchrecall，修复 #122）。"""
+        """撤回机器人自身发送的消息（修复 #122）。"""
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
@@ -2235,9 +2109,7 @@ class GroupAdminPlugin(Star):
         if count <= 0:
             yield event.plain_result("撤回数量必须为正整数。")
             return
-        max_count = max(1, int(self.get_group_setting(group_id, "batch_max_count", 20) or 20))
-        if count > max_count:
-            count = max_count
+        count = max(1, min(count, 50))
 
         current_msg_id = raw.get("message_id")
         snapshot = await self._get_history_snapshot(event, group_id, current_msg_id)
@@ -2760,7 +2632,7 @@ class GroupAdminPlugin(Star):
         if not group_id:
             return
 
-        # 撤回消息历史：记录 bot 自身发言，用于 /撤回自身 / /撤回 N / /撤回 编号（#117 #118 #122）。
+        # 撤回消息历史：记录 bot 自身发言，用于 /撤回自身 / /撤回 N（#117 #118 #122）。
         # 与自动关键词撤回无关，所有群组都需要写入。
         bot_msg_id = raw.get("message_id")
         bot_user_id = raw.get("user_id") or raw.get("self_id")
