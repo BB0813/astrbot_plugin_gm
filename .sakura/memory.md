@@ -1,18 +1,18 @@
 # 项目记忆
 
-累计反思 60 次
+累计反思 66 次
 
 ## 仓库背景
 
-仓库 `mjy1113451/astrbot_plugin_gm` 是 AstrBot 群管理类插件，Issue/PR 常涉及命令解析、撤回、群管理权限、按群配置、OneBot 适配器兼容、配置 schema 与 README 同步。
+仓库 `mjy1113451/astrbot_plugin_gm` 是 AstrBot 群管理类插件，Issue/PR 常涉及命令解析、撤回、群管理权限、按群配置、OneBot 适配器兼容、配置 schema 与 README 同步。**高频模式**：权限模型重构（#130/#132）、引用消息触发型命令（#131 群待办）、撤回/STT/头衔/加群申请——出现关键词即套对应模板。
 
-- **"删除功能"类 Issue 不应自动归 medium**：维护者本人纯减法性质的功能裁剪，优先级应考虑"主动减法 + owner 自实施 + 无横切关注点"组合 → low（除非涉及撤回/缓存）。
+- **"删除功能"类 Issue 不应自动归 medium**：维护者本人纯减法性质的功能裁剪 → low 组合（主动减法+owner 自实施+无横切关注点）。
 - **`breaking-change` 应作为独立标签**：删除既有命令语法、修改既有命令参数语义、修改既有命令返回值、删除既有配置项都属 breaking change。
-- **`recall_cmd` 是高频改动点**：本仓库撤回类 PR 多次出现（语义变更、批量撤回、缓存兜底、行号解析、接口收敛），未来分析应优先关注 Path 分支完整性、对称性、本地缓存写入、帮助文本同步。
-- **撤回类 Issue 改动清单（五处同步→七处同步）**：main.py + README + 帮助 + schema + CHANGELOG；涉及"撤回+禁言"扩展应再加 **STT/转写配置文件** + **误伤率文档说明**（README 风险提示）。
-- **撤回类 PR 强制检查清单**：① `/撤回 1 3 5` 多编号与 AstrBot 命令匹配器冲突 ② `after_message_sent` 钩子可用性与循环风险 ③ 缓存并发安全、重启丢失、过期策略 ④ `retcode=1200` 跨适配器识别 ⑤ `batch_max_count` vs `max_message_history` 关系 ⑥ bot 权限校验（QQ 2 分钟限制）⑦ 配置 schema 一致性 ⑧ 旧配置/缓存升级兼容 ⑨ README+帮助+docstring 三处同步。
-- **撤回缓存三层链路优先级**：必须显式 `recent_messages`（旧）→ `message_history`（新）→ `get_group_msg_history`（OneBot 兜底）的优先级与失败回退。
-- **删减类 issue 检查清单**：调用点清空、帮助/README/docstring 同步、CHANGELOG/公告、剩余路径边界、用户迁移路径；不能套用新增类检查模板。
+- **`recall_cmd` 是高频改动点**：撤回类 PR 多次出现，未来分析应优先关注 Path 分支完整性、对称性、本地缓存写入、帮助文本同步。
+- **撤回类改动清单（五处→七处同步）**：main.py + README + 帮助 + schema + CHANGELOG；扩展再加 STT/转写配置 + 误伤率文档。
+- **撤回类 PR 强制检查清单**：① `/撤回 1 3 5` 多编号与命令匹配器冲突 ② `after_message_sent` 钩子可用性 ③ 缓存并发/重启丢失/过期 ④ `retcode=1200` 跨适配器 ⑤ `batch_max_count` vs `max_message_history` ⑥ bot 权限校验（QQ 2 分钟）⑦ schema 一致性 ⑧ 旧配置/缓存升级兼容 ⑨ README+帮助+docstring 三处同步。
+- **撤回缓存三层链路优先级**：`recent_messages`（旧）→ `message_history`（新）→ `get_group_msg_history`（OneBot 兜底）。
+- **删减类 issue 检查清单**：调用点清空、帮助/README/docstring 同步、CHANGELOG/公告、剩余路径边界、用户迁移路径。
 
 ### 头衔类 Issue 标准分析模板（#125 案例）
 
@@ -39,12 +39,47 @@
 - **分类必为 `enhancement` + `medium`**（涉及代为拒绝加群申请，存在误拒/理由不当风险，不能降 `low`）。
 - **与既有 `pending_join_requests` 流程衔接**：复用入口避免新增并行通道；同意侧 reason 透传也需验证。
 
+### 权限模型重构类 Issue 标准模板 v2（#130 + #132 案例，**仓库高频模式**）
+
+- **触发关键词扫描**：`权限模型`、`plugin_admins`、`群管理员`、`群主`、`权限重构`、`/设管`、`/取管`、`sender.role`。出现任一关键词即触发本模板。
+- **标签基线（必给）**：`enhancement`(0.95) + `breaking-change`(≥0.90) + `deprecation`(≥0.75) + `permission-model`(≥0.80) + `configuration`(0.85) + `group-management`(0.85) + `bot-role`/`sender-role`(≥0.70) + `onebot`/`compatibility`(≥0.65) + `needs-discussion`(0.75-0.85) + `needs-info`(≤0.45)。
+- **优先级决策路径显式化**：① 横切重写+breaking-change → 最低 medium ② owner-driven+已有标准化模式 → 不升 high ③ 工作量可控+迁移路径明确 → 不升 high ④ 跨适配器风险已识别但有兜底 → 维持 medium。
+- **工作量保守估算**：18+ 调用点 + 五处同步 + 迁移指南 + 测试验证 → 200-350 行、3-5 天（不要低估）。
+- **权限提升风险审计必给具体示例**：至少列 2-3 个原本不该被群主执行的命令（如 `/踢人`、`/全员禁言`、`/改群名`），并建议"是否需保留 super-admin 概念"作为决策点。
+- **同类配置项扫描**：`title_admins`/`group_admin_admins`/`kick_admins` 等是否一并迁移？避免分散实施。
+- **维护者连续发起同类 Issue**（#130+#132）：应主动建议合并或互相引用，避免分散精力。
+- **首次合并引用**：在"建议优先级"章节显式写"参 §权限模型重构模板 v2"作为决策依据。
+
+### 引用消息触发型命令 / OneBot 群待办类 Issue 标准模板（#131 案例）
+
+- **触发关键词**：群待办 / todo / 待办 / set_group_todo / _set_group_todo / 引用消息 + 群管理。
+- **OneBot 协议分层警示（关键）**：群待办 API 在 OneBot v11 标准协议中**未定义**，属扩展能力。NapCat 提供 `_set_group_todo`，Lagrange 多不支持，go-cqhttp 需 HTTP API 插件扩展。**必须明确"非 v11 标准"**，否则误导实现者。
+- **QQ 群待办 vs 群公告 语义区分**：群待办（`set_group_todo` 部分实现为 `set_group_notice`）与群公告（`set_group_announce`）是不同入口，插件需明确选型。
+- **标签建议**：`command`(0.95) + `group-management`(0.85-0.92) + `enhancement`(0.95) + `onebot`(0.55) + `compatibility`/`onebot-extension`(0.75-0.85) + `permission`(0.40) + `configuration`(0.35)。建议仓库新增 `reply`/`quote-message`(0.85) + `bot-capability` + `onebot-extension` 标签。
+- **owner-driven 标签校准**：`needs-info` ≤0.30（缺决策非信息）、`needs-discussion` 0.75-0.85（设计决策待定）、`help wanted` ≤0.1、`good first issue` ≤0.10（跨适配器差异+权限决策）。
+- **必查项**：① API 标准性（v11 标准 vs 扩展）② bot/调用者权限（群主专属 vs 群管即可）③ `_get_reply_id` reply_id 解析与 None 校验 ④ 跨适配器支持矩阵 ⑤ 引用消息已撤回兜底 ⑥ 配置 schema 五处同步（含 CHANGELOG）。
+- **API 返回 ok ≠ UI 生效**：QQ 客户端 UI 异步刷新，建议指令提示加"请打开群消息顶部查看（约 1-2 秒后生效）"。
+- **配置 schema 默认值**：全局 enabled，按群 override 关闭为主（与现有 `group_overrides` 模式一致）。
+- **典型误判警示**：与 `/设精` 表面同构（都是 reply_id+单 API），但 `/设精` 用 v11 标准 `set_essence_msg`，群待办用扩展 API——可行性差异巨大。
+
+### 仓库"群管理动作新增"标准模板（#131 复用）
+
+1. 权限校验：`_is_group_admin_or_owner` + `is_plugin_admin`（注意群待办可能需群主专属）
+2. 引用提取：`_get_reply_id(event)` + None 校验
+3. 参数转换：`_execute_action` 已处理 group_id/user_id/message_id int
+4. API 三段式：标准名 → 带下划线变体 → 降级提示
+5. 失败回退：返回成功 ≠ UI 生效
+6. 元组注册：`_GM_COMMAND_NAMES` 加入新指令名
+7. 五处同步：main.py + schema + README + 帮助 + CHANGELOG
+
 ## 反模式（最关键警示）
 
 - **结构化输出校验失败 ≠ 信息不足**：看到 `expected <SUGGESTED_TITLE>` 等字段校验错误时，应**仅修复字段输出**（如把"无建议"改成实际建议），**不得把所有判断都退化为"无法评估"/`other`/空标签/无建议**。**字段校验失败仅触发输出修复，不得影响分类/可行性/标签/标题等实质性判断**。**Pre-check 规则**：在任何字段出现"无建议/无法评估/空/未检测到重复"前，必须先确认是否源于校验失败——校验失败应**局部修复**而非**整体降级**。
+- **校验失败短路器（必须固化）**：若反思摘要提及字段校验错误（如 `reserved tag syntax`/`expected <SUGGESTED_TITLE>`），则只修复字段格式，**实质性判断（分类/优先级/标签/可行性/标题）维持原始判断，不得连带退化**。Issue #131 (group_todo) 与 #132 (permission-model) 均曾因此整体降级为 `other`+空标签+无建议。
 - 标题字段**禁止写"无建议"**；原标题已清晰应标"可保留"或给轻量规范化版。标题为空、"。"等无意义时必须改写。
 - 标签在不确定体系时也应给通用候选并注明需映射，**不能留空**；可行性在信息不足时也应有条件判断，不能写"无法评估"。
 - **重复检测措辞强制模板**：无历史列表时**写"暂未发现"并列出建议检索关键词**，"未检测到重复"/"无重复"/"可能是 #X 的重复"均被明令禁止。每次重复检测输出末加注"⚠️ 措辞核对：是否使用了禁用的'未检测到重复'/'无重复'/'可能是#X的重复'？"。
+- **重复检测前置过滤**：若两 Issue 主分类不同（一个 bug 一个 enhancement），置信度上限 0.3，避免基于关键词表面相似度的误报（#132 曾误报 #125）。
 - **"quick"策略不能成为零审查的借口**：涉及权限/撤回/缓存等横切关注点的 PR，最低限度必须覆盖安全相关检查和结构性检查（schema 一致性、命令签名、关键风险点）。
 - **PR 描述数字与实际 diff 不一致**需主动指出（如声称 +520/-103 实际 +494/-52）。
 - **chore/reflection 批量 commit 污染提交历史**：多个相同信息的 chore commit 应在审查中标记为提交历史质量问题。增量审查时优先识别哪些是"有价值的代码变更"、哪些是"chore 噪音"。
@@ -63,7 +98,7 @@
 - **`needs-info` vs `needs-discussion` 区别**：前者用于"缺关键事实才能评估"，后者用于"决策待定/方向冲突"。owner-driven issue 缺的是决策而非信息，应降 `needs-info` ≤0.2，`needs-discussion` 保持高权重。不要把"系统能力待确认"等同于 `needs-info` 高权重——此时 `needs-info` 0.35-0.50，`needs-discussion` 0.80+。
 - **"good first issue"慎用**：仅适合"明确小重构/纯文档/小功能"；增强类涉及设计决策/兼容性时置信度 ≤0.15。
 - **`help wanted` 对 owner-driven self-implementation 几乎不适用**：维护者本人提交 + 改法明确 + 工作量小时置信度 ≤0.1。
-- **行号引用必须可溯源**：精确行号若无"已读取 main.py 验证"说明，会让读者怀疑是猜测；要么读取验证，要么用"约 L2000-2060"等模糊表述。
+- **行号引用必须可溯源**：精确行号若无"已读取 main.py 验证"说明，会让读者怀疑是猜测；要么读取验证，要么用"约 L2000-2060"等模糊表述。建议在可行性章节开头明示"以下行号基于项目记忆与既有 PR 模式推断，PR 实际编写时以最新 main.py 行号为准"。
 - **同期并行 Issue 方向冲突要纳入优先级判定**：扫描同期相关 Issue 是否方向冲突，冲突则升级 `needs-discussion` 高权重。
 - **语音/STT/语音违规检测类 Issue 标准标签**：`enhancement` + `stt`/`voice`（核心模块标签，仓库若未建立应主动建议）+ `moderation` + `recall` + `profanity` + `configuration` + `permission` + `onebot`/`compatibility` + `privacy` + `needs-discussion` 高权重 + `needs-info` ≤0.45。
 
