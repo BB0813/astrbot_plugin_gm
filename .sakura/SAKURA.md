@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 72 次
+> 累计反思 73 次
 
 ## 1. 项目简介
 
@@ -96,9 +96,9 @@
 
 - 标题为"。"、正文仅 URL+命令形式时，必须从正文重建需求，不能依赖标题分类。
 - 分类 `enhancement`（辅以 `merge-request` / `external-repo`），优先级 `medium`。
-- 关注：外部代码质量评估、OneBot 适配兼容、与本仓库命令注册/权限模型集成点、schema 是否需扩展、bot 权限要求、缓存策略、撤回时间窗、限流保护、bot 自身消息处理、部分失败处理。
-- 外部代码合入关注：代码归属、许可证（LICENSE 兼容性）、依赖与框架版本、代码风格统一、维护责任、submodule/copy/vendor 选择、后续同步策略。
-- 复用了 §4.2–§4.4 已有沉淀：参数解析、自身 `message_id` 排除、OneBot 适配差异、@ 解析等。
+- **必查项**：① OneBot 适配器是否暴露 `set_group_todo` ② 消息 ID 跨适配器识别 ③ 引用消息中的 `message_id` 提取路径 ④ 权限模型（群主专属 vs 群管即可）⑤ 错误反馈（消息已过期/不是机器人发送的消息）⑥ 撤回场景下的待办撤销。
+- **新增命令七处同步清单**（owner-driven 命令新增）：main.py + README + 帮助命令 + `_conf_schema.json`（若新增配置项）+ CHANGELOG + `_GM_COMMAND_NAMES` 元组注册 + 跨适配器兼容性文档。
+- **新增标签建议**：`reply`/`quote-message`（标识依赖 reply_id 解析的命令）+ `bot-capability`（依赖 bot 特定能力的命令）+ `onebot-extension`（依赖 OneBot 非 v11 标准 API 的命令）。
 
 ### 4.11 PR #123 多轮增量审查教训（含 incr1–5，3878727 第五轮）
 
@@ -203,7 +203,16 @@
 - **行号引用必须前置声明**：批量行号引用（如 L398-401、L454-468、L607-620、L2266-2296、L2387-2433）前必须声明"基于项目记忆 + 既有 PR 模式推断，建议 PR 提交前以最新 main.py 行号为准"，避免被怀疑是猜测。
 - **正确输出保底模板**（校验失败时仍须输出）：分类 + 优先级 + 摘要 + 建议标签列表 + 重复检测（"暂未发现"+ 关键词 + ⚠️措辞核对）+ 标题改写（"可保留"或轻量规范化）。
 
-### 4.20 OneBot 群待办类 Issue 分析模板（Issue #131 三轮反思沉淀）
+### 4.20 权限模型重构类 Issue 标签基线 v2（Issue #132 反思）
+
+- **必给标签基线**（与 §4.17 配套的标签清单）：`enhancement` + `breaking-change`（置信度 ≥0.90）+ `deprecation`（≥0.75）+ `permission-model`（≥0.80，新建）+ `configuration`（≥0.85）+ `group-management`（≥0.85）+ `bot-role`/`sender-role`（≥0.70，新建）+ `onebot`/`compatibility`（≥0.65）+ `command` + `needs-discussion`（升 0.75）+ `needs-info`（≤0.45，owner-driven 决策待确认）。
+- **应移除标签**：`question`（置信度应 ≤0.05，owner-driven 增强类有明确诉求，非询问）。
+- **重复检测必须分类前置过滤**：若两 Issue 的主分类标签不同（一个 bug 一个 enhancement），duplicate 置信度上限 0.3；自动检测算法可能仅基于关键词相似度未结合分类差异（Issue #132 曾把 #125 bug 误判为 #132 enhancement 的重复，置信度 0.95 完全失真）。
+- **权限提升风险审计必须给具体命令示例**：至少 2-3 个示例（如 `/踢人`、`/全员禁言`、`/改群名`），并建议"是否需要为这些命令保留 super-admin 概念"作为决策点。
+- **同类配置项扫描决策**：主动检查 `title_admins`/`group_admin_admins`/`kick_admins` 是否同步迁移，建议一次性重构而非分散迁移。
+- **工作量估算需更保守**：18+ 调用点 + 五处同步 + 迁移路径 + 测试验证 → 实际 200-350 行、3-5 天（不是 150-250 行、1-3 天）。
+
+### 4.21 OneBot 群待办类 Issue 分析模板（Issue #131 三轮反思沉淀）
 
 - **触发场景**：维护者本人发起新增 `/添加群待办` 命令，引用消息回复即可设为群待办。属 owner-driven 命令新增。
 - **关键技术事实**：OneBot v11 标准协议**并未定义** `set_group_todo` 或 `send_group_todo`——这是 go-cqhttp/NapCat/Lagrange 等实现的**非标准扩展**。表面与 `/设精` 同构（都是 reply_id + 单 API 调用），实质 API 可用性本身就是个未解问题——是分析中最严重的可行性误判来源。
@@ -215,56 +224,53 @@
 - **新增标签建议**：`reply`/`quote-message`（标识依赖 reply_id 解析的命令）+ `bot-capability`（依赖 bot 特定能力的命令）+ `onebot-extension`（依赖 OneBot 非 v11 标准 API 的命令）。`todo`/`group-todo`（若仓库未建应建议新建）。
 - **引用消息触发型命令分析模板**：OneBot API 标准性 + API 权限要求 + reply_id 解析路径兼容 + 跨适配器 fallback + 消息已撤回兜底。
 
-### 4.21 owner-driven Issue 标签权重校准规则（Issue #131 三轮沉淀）
+### 4.22 owner-driven Issue 标签权重校准规则（Issue #131）
 
 - **`needs-info` 调整**：owner-driven issue 缺的是"设计决策"而非"事实信息"，应降 `needs-info` ≤0.2-0.30（不是 0.4）。
 - **`needs-discussion` 调整**：owner-driven 缺决策时 `needs-discussion` 应保持高权重（0.75-0.85），不是 0.55-0.65。
-- **`good first issue` 慎用**：增强类涉及设计决策/兼容性时置信度 ≤0.15（不是 0.2）；涉及跨适配器差异和权限设计决策不应给 good first issue。
-- **`help wanted` 几乎不适用**：owner-driven self-implementation（维护者本人提交 + 改法明确 + 工作量小）置信度 ≤0.05-0.1。
-- **config 决策清单**（按群覆盖 vs 全局开关）：① 是否需要"某些群禁用"场景？② 是否需要"某些群仅特定人可用"？③ 默认值：全局 enabled，按群 override 关闭为主（与 `group_overrides` 模式一致）。
+- **`good first issue` 慎用**：增强类涉及设计决策/兼容性时置信度 ≤0.15（不是 0.2）。
+- **`help wanted` 几乎不适用**：owner-driven self-implementation 置信度 ≤0.05-0.1。
+- **config 决策清单**：① 是否需要"某些群禁用"场景？② 是否需要"某些群仅特定人可用"？③ 默认值：全局 enabled，按群 override 关闭为主（与 `group_overrides` 模式一致）。
 
-### 4.22 反思流程纪律性强化（Issue #130 教训）
+### 4.23 反思流程纪律性强化（Issue #130 教训）
 
 - **USERNAME 等保留字校验错误的处置**：Issue 中"作者：unknown"、原标题"。"等异常输入不应触发整体降级。应：① 单独标注"作者信息缺失，建议人工补充"；② 对"。"标题进行主动改写（反模式明令）；③ 其他字段继续基于 Issue 正文评估。
-- **重复触发同一反模式的根因诊断**：PR #123 第六轮 + Issue #130 + Issue #131 三轮 + Issue #132 五次触发"校验失败整体降级"同一根因，说明反思流程中存在自动化保护机制缺失。应在反思流程中加入"校验失败短路器"——若摘要提及字段校验错误，则：仅修复字段输出格式；实质性判断维持原始判断；标题字段在原标题清晰时直接给"可保留"。
+- **重复触发同一反模式的根因诊断**：PR #123 第六轮 + Issue #130 + #131 三轮 + #132 五次触发"校验失败整体降级"同一根因，说明反思流程中存在自动化保护机制缺失。应在反思流程中加入"校验失败短路器"——若摘要提及字段校验错误，则：仅修复字段输出格式；实质性判断维持原始判断；标题字段在原标题清晰时直接给"可保留"。
 - **失败案例的复用价值**：Issue #130、#131、#132 三类分析失误（整体降级 + 禁用措辞 + 标签遗漏）应固化到反思流程 Pre-check 步骤，作为新反思的强制核对项。
 
-### 4.23 Issue #132 权限模型重构类 Issue 标签基线 v2（与 §4.17 配套）
+### 4.24 Issue #133 解禁 bug 标准分析模板（两轮反思沉淀）
 
-- **必给标签基线**：`enhancement` + `breaking-change`（≥0.90）+ `deprecation`（≥0.75）+ `permission-model`（≥0.80，新建）+ `configuration`（≥0.85）+ `group-management`（≥0.85）+ `bot-role`/`sender-role`（≥0.70，新建）+ `onebot`/`compatibility`（≥0.65）+ `command` + `needs-discussion`（升 0.75）+ `needs-info`（≤0.45，owner-driven 决策待确认）。
-- **应移除标签**：`question`（置信度 ≤0.05，owner-driven 增强类有明确诉求）。
-- **重复检测分类前置过滤**：若两 Issue 主分类不同（bug vs enhancement），duplicate 置信度上限 0.3；自动检测仅基于关键词相似度未结合分类差异（#132 曾把 #125 bug 误判为 enhancement 重复，置信度 0.95 失真）。
-- **权限提升风险审计必须给具体命令示例**：至少 2-3 个（如 `/踢人`、`/全员禁言`、`/改群名`），并建议"是否保留 super-admin 概念"作为决策点。
-- **同类配置项扫描决策**：主动检查 `title_admins`/`group_admin_admins`/`kick_admins` 是否同步迁移，建议一次性重构。
-- **工作量估算更保守**：18+ 调用点 + 五处同步 + 迁移路径 + 测试验证 → 实际 200-350 行、3-5 天（不是 150-250 行、1-3 天）。
+- **触发场景**：`/解禁 @用户` / `unmute_cmd` 提示成功但目标仍被禁言；或解禁命令对装饰字符 QQ 解析错误。
+- **必查 9 项**：① Bot 在该群角色（部分协议要求群主专属解禁）② 目标用户是否仍在群内（已退群如何兜底）③ OneBot 实现版本（NapCat/Lagrange/go-cqhttp 对 `delete_group_ban` 语义差异）④ `duration` 参数语义（`duration=0` vs 不传 vs `duration=-1`，**falsy 判空陷阱**：`0` 是合法值但 `if not duration` 会误判）⑤ `_extract_at_qq` 解析（必须按 segment/user_id，不按空格 split；花体字/数学字母/装饰 Unicode 必须 NFKC 归一化 + `\d{5,12}` 强校验）⑥ `get_group_member_info` 回读校验（API 返回 ok ≠ 实际生效）⑦ 完整执行日志（含早退语句是否吞噬回读/日志）⑧ 最近配置变更 ⑨ 完整堆栈/截图。
+- **优先级 `medium`**（核心命令局部不可用 + 误判用户状态风险 + 跨适配器兼容风险已识别但有兜底）。
+- **必给标签**：`bug` (0.92) + `command` (0.90) + `group-management` (0.88) + `unmute`/`lift-ban`/`mute-management` (0.85-0.90，建议仓库新建) + `onebot` (0.70-0.78) + `compatibility` (0.65-0.75) + `bot-role` (0.65) + `needs-info` (0.85-0.90，缺适配器版本/截图/目标身份无法定位根因)。
+- **修复方向分支判定**：分支 A（API 层兼容问题，`duration=0` 语义差异）~20-40 行 + 1 天；分支 B（需补完整状态回读链路）~50-100 行 + 1.5-2 天；分支 C（需重构解禁入口或权限校验）~100-150 行 + 2-3 天。
+- **"提示成功但实际未生效"通用模式**（扩展自 §4.5 头衔类模板）：覆盖解禁 (`set_group_ban` duration)、头衔 (`set_group_special_title`)、设精 (`set_essence_msg`)、改群名 (`set_group_name`)、全员禁言 (`set_group_whole_ban`)；通用必查项：① bot 权限 ② 目标用户身份 ③ OneBot 实现版本 ④ `_extract_at_qq` 解析 ⑤ API 参数语义（duration=0/""/None）⑥ 状态回读 ⑦ 适配器差异 ⑧ 提示语区分接口成功与实际生效。
+- **解禁三层语义**（与禁言对称）：A. 解除群管 API 禁言（`set_group_ban` duration=0）；B. 解除"禁我"自怼状态（插件内部记录）；C. 解除审批工作流中"待审批禁言状态"。分析前必须确认指哪一层。
 
-### 4.24 Issue #133 `/解禁` 提示成功但未生效 + "提示成功但实际未生效"通用模板扩展（与 §4.5/§4.12 配套）
+### 4.25 Issue #134 装饰字符 QQ / 视觉欺骗型用户名解析 bug 模板
 
-- **场景**：`/解禁 @用户` 提示成功但目标仍被禁言；属于"提示成功但实际未生效"模式从头衔扩展到解禁/设精/改群名/全员禁言的全群管理动作通用模板。
-- **分类**：`**bug**`（0.90+） + `command`(0.90) + `group-management`(0.88) + `unmute`/`lift-ban`/`mute-management`（置信度 0.80-0.90，建议仓库新建细粒度动作标签）。优先级 `medium`（核心命令局部不可用 + 误判用户状态风险 + 跨适配器兼容风险已识别但有兜底）；决策路径必须显式写出。
-- **必查 10 项**：① Bot 在该群角色（部分协议要求群主专属解禁）② 目标用户是否仍在群内（已退群时 `get_group_member_info` 返回非 0 应有兜底）③ OneBot 实现版本（NapCat/Lagrange/go-cqhttp 对 `delete_group_ban` 语义差异）④ `duration` 参数语义（`duration=0` vs 不传 vs `duration=-1`）⑤ `_extract_at_qq` 解析（按 segment/user_id，不按空格 split）⑥ `get_group_member_info` 回读校验（API 返回 ok ≠ 实际生效）⑦ 完整执行日志 ⑧ 最近配置变更 ⑨ 早退语句是否吞噬共享逻辑（权限/参数校验早退导致回读/日志未执行）⑩ f-string / 默认值陷阱（`if not duration` 误判 `0` 为未传，应 `is None` 或 `== -1`）。
-- **可行性必须显式分支判定**（不要只给范围估算）：分支A（API 层兼容问题，`duration=0` 语义差异）~20-40 行 + 1 天；分支B（补完整状态回读链路）~50-100 行 + 1.5-2 天；分支C（重构解禁入口或权限校验）~100-150 行 + 2-3 天。
-- **"禁言/解禁"语义至少 3 层**（与 §4.9 审批工作流呼应）：A. 解除群管 API 禁言（最常见，`set_group_ban` duration=0）；B. 解除"禁我"自怼状态（插件内部记录）；C. 解除审批工作流"待审批禁言状态"。需先确认用户指哪一层。
-- **needs-info 应 ≥0.85-0.90**：解禁类缺适配器版本/截图/目标身份是定位根因的硬阻塞，参考 #125 头衔类先例。
-- **重复检测措辞禁词**：`"可能是 #128 的重复"` 已被反模式明令禁止，应改为"暂未发现" + 关键词列表 + 怀疑证据说明。
+- **场景**：用户用花体字（𝓒𝓪𝓷𝓬𝓮𝓻）、手写体、组合 Unicode 字母（𝐀、𝕒 等数学字母块）等"看起来是 QQ 号"但实际是字符串的输入，导致 `_extract_at_qq` 解析失败或解析为字面量字符串。
+- **触发关键词**：`@用户` + `解禁`/`禁言`/`踢人`/`设管` + 装饰字符/数学字母/花体字。
+- **必查项**：① `_extract_at_qq` 是否 NFKC 归一化 ② OneBot 适配器是否对装饰字符 QQ 拒绝/截断 ③ 群号是否也污染 ④ 是否需要在输入层加"QQ 必须是纯数字"硬校验 ⑤ 装饰字符 QQ 跨适配器命令成功率矩阵。
+- **修复建议**：在 `_extract_at_qq` 顶部加 `unicodedata.normalize('NFKC', s)` + 正则 `\d{5,12}` 强校验 + 错误提示"目标 QQ 格式不正确"。
+- **必给标签**：`bug` (0.95) + `command` (0.90) + `parser` (0.85) + `at-parse`/`at-extract` (0.80，建议新建) + `group-management` (0.75) + `onebot`/`compatibility` (0.65) + `needs-info` (0.55) + `mute`/`unmute` (0.70)。
+- **优先级 `medium`**：核心禁言/解禁命令对群管理影响范围大，误解禁可能放大已有禁言执行错误；但用户场景是单群单次误操作，不升 high。
+- **重复检测关键词必须包含模块名**：仅按症状相似度（如"获取信息问题"）会反复误报 #125。下次遇到"获取信息问题"+"命令解析错误"模板时，先按模块归类再判断重复。
+- **工作量估算反向校准**：小修复（<50 行）也要避免低估为 1 天内——装饰字符 QQ 测试矩阵（NapCat/Lagrange/go-cqhttp × 数学字母/手写体/Emoji 风格）至少需要半天构造测试用例。小修复工作量下限 1 天，包含最小适配器验证。
 
-### 4.25 Issue #134 装饰字符 QQ / 视觉欺骗型用户名解析 bug（新晋高频模式）
+### 4.26 Issue #135 禁言列表命令分析（owner-driven 命令新增）
 
-- **场景**：用户用 `@𝓒𝓪𝓷𝓬𝓮𝓻`（花体字/数学字母 Unicode 块）执行 `/解禁`，bot 错误识别为字符串字面量而非目标 QQ，本质是 `_extract_at_qq` 未做归一化。
-- **分类**：`**bug**` + `command` + `parser` + `at-parse`/`at-extract`（建议新建）+ `group-management` + `onebot`/`compatibility` + `needs-info` + `mute`/`unmute`（建议新建）。优先级 `medium`（核心解禁命令解析错误，但用户场景为单群单次误操作；误解禁安全影响 > 误禁言，应纳入优先级权重）。
-- **必查 6 项**：① `_extract_at_qq` 是否 NFKC 归一化 ② 装饰字符 QQ 经 AstrBot 事件框架后是原始字符串还是已规范化 ③ OneBot v11 `message` 段 `qq` 字段类型（字符串 vs 数字）④ 跨适配器对装饰字符 QQ 的处理（NapCat/Lagrange/go-cqhttp）⑤ 群号是否被装饰字符污染 ⑥ 是否有 `get_group_member_info` 回读校验。
-- **修复建议**：在 `_extract_at_qq` 顶部加 `unicodedata.normalize('NFKC', s)` + 正则 `\d{5,12}` 强校验 + 错误提示"目标 QQ 格式不正确"；输入层加"QQ 必须是纯数字"硬校验。
-- **工作量**：20-60 行（条件判断+测试用例），但因构造 NapCat/Lagrange/go-cqhttp × 数学字母/手写体/Emoji 风格的测试矩阵需半天，建议小修复工作量下限 1 天。
-- **记忆激活失败警示**：标题类模板 §4.12 必查项⑦ 已有 `_extract_at_qq` 解析说明，但本次分析未激活——说明基于关键词的模板触发机制对"解禁/禁言"类命令不敏感，应扩展关键词覆盖范围。
-- **重复检测"症状相似 ≠ 根因相似"陷阱**：#125（头衔 `special_title` 解析+OneBot 兼容）与 #134（禁言 `_extract_at_qq` 输入解析）都用"获取信息问题"作为症状描述，但根因模块完全不同。应**先按模块归类再判断重复**，不要按症状字符串相似度。
-
-### 4.26 反模式再犯与校验失败短路器实战（#132/#133/#134 三连击）
-
-- **反模式连击**：本次 #132/#133/#134 三次连续触发"校验失败整体降级"（分类退化 `other`、可行性"无法评估"、标签空、标题"无建议"、重复检测"可能是 #X 的重复"），与 PR #123 第六轮 + #130 累计触发同一根因。
-- **校验失败局部修复原则**（必须前置）：摘要提及 `expected <SUGGESTED_TITLE>` / `expected <REASON>` 等字段校验错误时，**仅修复字段输出格式**，实质性判断（分类/优先级/标签/可行性/标题/重复检测）必须基于 Issue 实质内容独立完成，**不得连带退化**。
-- **强制规则写入反思指令**：若反思摘要提及字段校验错误 → 撤销降级 → 恢复原始判断 → 只改字段输出格式。
-- **"校验失败 ≠ 信息不足"实操**：Issue #132（标题已含 `[enhancement][medium]`）、#133（标题明示"解禁bug" + 摘要含根因线索）、#134（用户场景描述清晰）信息**完全不缺**，根因是反思流程机械触发降级。
-- **正确输出保底模板**（校验失败时仍须输出）：分类 + 优先级 + 摘要 + 建议标签列表 + 重复检测（"暂未发现"+ 关键词 + ⚠️措辞核对）+ 标题改写（"可保留"或轻量规范化）。
+- **场景**：维护者本人发起新增"禁言列表"命令（`get_group_member_list` 过滤 `shut_up_timestamp`/`ban_expire_time` > 0 的成员），复用现有禁言命令体系。
+- **分类**：`enhancement` (0.95) + `medium`。与 #131 群待办同级，工作量更小、跨适配器风险更低，按一致标准定 medium。**不应升 high**（不涉及权限模型重构、不涉及配置迁移）。
+- **必给标签**：`enhancement` (0.95) + `command` (0.95) + `group-management` (0.90) + `mute`/`ban-list`/`mute-status` (0.85-0.90，建议仓库新建高频主题标签) + `onebot` (0.55) + `needs-discussion` (0.65-0.75，**owner-driven 但涉及设计决策**：`needs-discussion` 应保持高权重) + `permission` (0.45-0.55，若仓库无 `read-permission`/`viewer-role` 细粒度标签)。
+- **应给 `needs-discussion` 的 3 个决策点**：① 跨适配器字段差异（`shut_up_timestamp` NapCat/go-cqhttp vs `ban_expire_time` Lagrange vs `mute_end_time` 部分实现）做 fallback？哪些实现直接不支持？② 大型群性能（`get_group_member_list` 在 500+ 人群是否有分页？是否需要缓存？）③ 读权限模型（仅群管可见 vs 全员可见——读权限 vs 写权限区分）。
+- **可行性判断**：复用现有模式（`_execute_action`、权限 helper、元组注册），工作量集中在列表组装 + 格式化 + 跨适配器兼容，约 100-200 行（中等偏低）。
+- **可改进点**：① 分页/分批处理（`get_group_member_list` 大群返回可能上百条）② 缓存层（成员列表缓存策略）③ 空状态处理（"当前群无被禁言成员"）④ 时间格式显示（剩余禁言时长 > 30 天怎么显示——理论上 QQ 禁言上限 30 天，但跨适配器可能不一致）⑤ 隐私考虑（读权限可能被滥用为侦察工具——揭示群管执法记录，是否需要控制可见范围）。
+- **重复检测**：与 #131（群待办）虽然都是 owner-driven 增强命令，但 API 完全不同（`get_group_member_list` vs `set_group_todo`），不应标重复。**应写"暂未发现高度重复 Issue。建议检索关键词：`get_group_member_list`、`shut_up_timestamp`、`禁言列表`、`ban list`、`mute list`、`被禁言成员`。⚠️ 措辞核对：是否使用了禁用的'未检测到重复'/'无重复'/'可能是#X的重复'？"**
+- **建议标题**：`[enhancement][medium] 新增群禁言列表查询命令`（避免"本群"重复，可省略改动/版本字样保持简洁）。
+- **同类对比**：与 #131 群待办（写类）形成"读类/写类"两个子模板——读类（本次）：关注读权限、字段差异、数据脱敏、缓存策略；写类（#131）：关注写权限、API 返回、UI 生效延迟、回执。
+- **建议仓库沉淀**：① 新增 `mute`/`ban`/`ban-list` 标签子体系（与 `title`、`recall`、`vote` 并列）；② "跨适配器字段差异"建立读取类群成员字段对照表：`role`、`shut_up_timestamp`、`ban_expire_time`、`last_sent_time`、`join_time`、`level`、`special_title` 跨实现差异矩阵。
 
 ## 5. Issue 分析与标签经验（高层规则，详见 memory.md）
 
@@ -300,7 +306,7 @@
 - **AstrBot 消歧层选择**：撤回/计数类命令的参数语义修改必须明确是在 `@filter.command` 装饰器签名层（改类型注解/默认值）还是 handler 内部（先收 `str` 再分流）做消歧——后者要处理 `try/except int()` 已被 AstrBot 提前按注解转换的情况（参 §4.2、§4.15）。
 - **OneBot 群待办类命令七处同步清单**（新增 owner-driven 命令模板，参 §4.21）：main.py + README + 帮助命令 + `_conf_schema.json` + CHANGELOG + `_GM_COMMAND_NAMES` 元组注册 + 跨适配器兼容性文档。
 - **owner-driven Issue 标签权重校准**（§4.22）：`needs-info` ≤0.2-0.30（不是 0.4），`needs-discussion` 0.75-0.85（不是 0.55-0.65），`good first issue` ≤0.15（不是 0.2），`help wanted` ≤0.05-0.1。
-- **权限模型重构类 Issue 必给标签基线**（§4.23）：`enhancement` + `breaking-change` ≥0.90 + `deprecation` ≥0.75 + `permission-model` ≥0.80 + `bot-role`/`sender-role` ≥0.70 + `onebot` ≥0.65 + `needs-discussion` 升 0.75；移除 `question`。
+- **权限模型重构类 Issue 必给标签基线**（§4.20）：`enhancement` + `breaking-change` ≥0.90 + `deprecation` ≥0.75 + `permission-model` ≥0.80 + `bot-role`/`sender-role` ≥0.70 + `onebot` ≥0.65 + `needs-discussion` 升 0.75；移除 `question`。
 
 ## 7. 协作与维护
 
