@@ -4,8 +4,6 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-插件-green.svg)](https://github.com/Snowyyu/AstrBot)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> ⚠️ 功能会根据需求持续增加。如有 Bug 或功能建议，请先提 [Issue](https://github.com/mjy1113451/astrbot_plugin_gm/issues)；AI 审核确认后可自行提交 PR（修复难度低到中等）。
-
 ---
 
 ## 功能一览
