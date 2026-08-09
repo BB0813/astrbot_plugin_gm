@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 65 次
+> 累计反思 71 次
 
 ## 1. 项目简介
 
@@ -238,6 +238,48 @@
 - **重复触发同一反模式的根因诊断**：PR #123 第六轮 + Issue #130 + Issue #131 三轮 + Issue #132 五次触发"校验失败整体降级"同一根因，说明反思流程中存在自动化保护机制缺失。应在反思流程中加入"校验失败短路器"——若摘要提及字段校验错误，则：仅修复字段输出格式；实质性判断维持原始判断；标题字段在原标题清晰时直接给"可保留"。
 - **失败案例的复用价值**：Issue #130、#131、#132 三类分析失误（整体降级 + 禁用措辞 + 标签遗漏）应固化到反思流程 Pre-check 步骤，作为新反思的强制核对项。
 
+### 4.24 校验失败短路器（PR #123 + Issue #130/#131/#132/#133/#134 五次触发的根因固化）
+
+- **反模式再犯现场**：单字段校验错误（如 `expected <SUGGESTED_TITLE>`、`expected <REASON>`）触发整体降级为 `other`/`无法评估`/空标签/`无建议`/"可能是 #X 的重复"。
+- **硬性规则**：校验失败应**仅修复字段输出格式**，实质性判断（分类/优先级/标签/可行性/标题/重复检测）必须独立基于 Issue 实质内容完成，**不得连带退化**。
+- **Pre-check 强制**：写"无建议/无法评估/空/未检测到重复"前**必须先确认是否源于校验失败**。如是，**局部修复**而非整体降级。
+- **保底输出模板**（校验失败时仍须输出）：分类 + 优先级 + 摘要 + 建议标签列表 + 重复检测（"暂未发现"+ 关键词 + ⚠️措辞核对）+ 标题改写（"可保留"或轻量规范化）。
+- **反思流程需补强**：建议在反思助手 Pre-check 加"若反思摘要含字段校验错误，自动撤销降级并恢复原始判断"拦截规则，而非依赖人工识别。
+
+### 4.25 装饰字符 QQ / 视觉欺骗型用户名（Issue #134 新晋高频解析类 bug）
+
+- **场景**：用户输入 `@𝓒𝓪𝓷𝓬𝓮𝓻` 等数学字母块/花体字/组合 Unicode 字母，被 `_extract_at_qq` 当作字面量处理，导致命令作用于装饰字符而非真实 QQ。
+- **应分类**：`bug`（命令"成功"但行为错误，置信度 ≥0.95）+ `command`(0.90) + `parser`(0.85) + `at-parse`/`at-extract`(0.80，建议新建) + `group-management`(0.75) + `onebot`/`compatibility`(0.65) + `needs-info`(0.55) + `mute`/`unmute`(0.70，建议新建)。
+- **优先级**：`medium`——核心禁言/解禁命令行为错误；误解禁风险（用户被禁言状态下误解禁会放大已有错误）应纳入权重评估；不升 high（未实际损害）、不降 low（命令确实行为错误）。
+- **必查项**：① `_extract_at_qq` 是否 NFKC 归一化 ② OneBot 适配器对装饰字符 QQ 拒绝/截断策略 ③ 群号是否也被污染 ④ 是否需"QQ 必须是纯数字"硬校验 ⑤ 跨适配器命令成功率矩阵 ⑥ `get_group_member_info` 回读校验。
+- **修复方向**：`_extract_at_qq` 顶部加 `unicodedata.normalize('NFKC', s)` + 正则 `\d{5,12}` 强校验 + 错误提示"目标 QQ 格式不正确"。
+- **工作量**：20-60 行，1-2 天（含最小适配器验证）。
+- **重复检测关键词必须包含模块名**：仅按症状相似度（"获取信息问题"）会反复误报 #125；应按模块归类（@用户解析 vs special_title）再判重。
+
+### 4.26 解禁/解除禁言类 Issue 标准分析模板（Issue #133 新增）
+
+- **触发场景**：`/解禁 @用户` / `unmute_cmd` 提示成功但目标仍被禁言。
+- **必查项（9 项）**：① Bot 在该群角色（部分协议要求群主专属解禁）② 目标用户是否仍在群内（已退群兜底）③ OneBot 实现版本（NapCat/Lagrange/go-cqhttp 对 `delete_group_ban` 语义差异）④ `duration` 参数语义（`duration=0` vs 不传 vs `duration=-1`——**`0` 是合法值**，禁用 falsy 判空）⑤ `_extract_at_qq` 解析（必须按 segment/user_id，不按空格 split）⑥ `get_group_member_info` 回读校验（API 返回 ok ≠ 实际生效）⑦ 完整执行日志 ⑧ 最近配置变更 ⑨ `get_group_member_info` 缓存与失效。
+- **禁言/解禁语义至少 3 层**（必先确认用户指哪一层）：A. 群管 API 禁言/解禁（最常见，对应 `set_group_ban`/`delete_group_ban`）B. 解除"禁我"自怼状态（插件内部记录）C. 解除审批工作流中"待审批禁言状态"。
+- **必给标签**：`bug` + `command` + `group-management` + `unmute`/`lift-ban`(0.85-0.90，建议新建) + `mute-management`(0.80) + `onebot`(0.70-0.78) + `compatibility`(0.75) + `bot-role`(0.65) + `needs-info`(0.85+，解禁类缺适配器版本/截图/目标身份是硬阻塞)。
+- **优先级**：`medium`（核心命令局部不可用 + 误判用户状态风险 + 跨适配器兼容风险已识别但有兜底）。决策路径必显式列出 4 条判定（核心命令不可用→最低 medium；误判风险→不降 low；跨适配器已识别兜底→维持 medium；信息不全待根因→不升 high）。
+- **可行性强制显式分支判定**：A（API 层兼容，`duration=0` 语义差异）~20-40 行/1 天；B（补完整状态回读链路）~50-100 行/1.5-2 天；C（重构解禁入口或权限校验）~100-150 行/2-3 天。
+- **早退语句陷阱**：解禁流程中权限早退/参数校验早退若吞噬回读/日志，必须前置（§PR 审查经验高频陷阱）。
+- **"提示成功但实际未生效"通用模板扩充**：覆盖解禁 (`delete_group_ban`)、头衔 (`set_group_special_title`)、设精 (`set_essence_msg`)、改群名 (`set_group_name`)、全员禁言 (`set_group_whole_ban`)；通用必查项为：bot 权限 + 目标身份 + OneBot 实现 + `_extract_at_qq` 解析 + API 参数语义（`""`/`None`/`0`/缺失差异）+ 状态回读 + 适配器差异 + 提示语区分接口成功与实际生效。
+
+### 4.27 权限模型重构类 Issue 标准模式 v2（Issue #132 沉淀）
+
+- **触发场景**：维护者本人发起权限层重构，删除 `plugin_admins` 配置、改用 sender.role/`get_group_member_info` 检测群原生身份。属权限模型重构 + 接口删除（breaking change）。
+- **完整决策路径显式化**（4 条）：① 横切重写 + breaking-change → 最低 medium；② 维护者本人发起 + 已有标准化模式 → 不升 high；③ 工作量可控 + 迁移路径明确 → 不升 high；④ 跨适配器风险已识别但有兜底 → 维持 medium。
+- **标签基线 v2（必给）**：`enhancement`(0.95) + `breaking-change`(≥0.90) + `deprecation`(≥0.75) + `permission-model`(≥0.80，建议新建) + `configuration`(0.85) + `group-management`(0.85) + `bot-role`/`sender-role`(≥0.70，建议新建) + `onebot`/`compatibility`(≥0.65) + `command` + `needs-discussion`(升 0.75) + `needs-info`(≤0.45)。**应移除**：`question`(≤0.05，owner-driven 有明确诉求非询问)。
+- **横切影响**：18+ 调用点（撤回/踢人/禁言/头衔/加群审批等）逐一审计；同类配置项（`title_admins`/`group_admin_admins`/`kick_admins`）是否一并迁移需维护者拍板——**建议一次性重构而非分散迁移**。
+- **关键风险**：权限提升审计——新模型下群主能执行哪些原本需 `plugin_admins` 才能执行的命令？至少给 2-3 个示例（`/踢人`、`/全员禁言`、`/改群名`），并建议"是否需要为这些命令保留 super-admin 概念"作为决策点。
+- **六处同步清单**：main.py + `_conf_schema.json` + README + 帮助命令 + CHANGELOG + **迁移指南**。
+- **工作量估算需保守**：18+ 调用点 + 六处同步 + 迁移路径 + 测试验证 → 实际 200-350 行、3-5 天（不是 150-250 行、1-3 天）。
+- **同类 Issue 关联**：#130 + #132 是同一维护者连续两个权限重构 Issue，建议主动合并或互相引用，避免分散精力。
+- **跨适配器风险**：sender 角色 vs 配置项本质差异：① 私聊无 `group_id` 降级 ② 匿名消息 `sender.role` 不准 ③ bot 自身角色降级 ④ `get_group_member_info` 缓存策略 ⑤ 跨适配器字段（NapCat/Lagrange/go-cqhttp）。
+- **重复检测前置过滤**：两 Issue 主分类不同（一个 bug 一个 enhancement），duplicate 置信度上限 0.3；禁用"可能是 #X 的重复"措辞。
+
 ## 5. Issue 分析与标签经验（高层规则，详见 memory.md）
 
 - 标题为"。"、"，"或信息极少时必须基于正文错误文本、复现命令和代码线索检索。
@@ -271,8 +313,13 @@
 - 验证清单：`python -m py_compile main.py` ≥ `ast.parse`；本地缓存回退类改动应附最小单元测试；README/帮助/schema/CHANGELOG 必须在同一 PR 同步；提交信息避免批量重复 `chore` commit（属提交历史质量问题——参 §4.11、§4.14）；行号引用必须标注"已读取 main.py 验证"或用"约 Lxxxx"模糊表述。
 - **AstrBot 消歧层选择**：撤回/计数类命令的参数语义修改必须明确是在 `@filter.command` 装饰器签名层（改类型注解/默认值）还是 handler 内部（先收 `str` 再分流）做消歧——后者要处理 `try/except int()` 已被 AstrBot 提前按注解转换的情况（参 §4.2、§4.15）。
 - **OneBot 群待办类命令七处同步清单**（新增 owner-driven 命令模板，参 §4.21）：main.py + README + 帮助命令 + `_conf_schema.json` + CHANGELOG + `_GM_COMMAND_NAMES` 元组注册 + 跨适配器兼容性文档。
+- **权限模型重构类 Issue 必给标签基线**（§4.27）：`enhancement` + `breaking-change` ≥0.90 + `deprecation` ≥0.75 + `permission-model` ≥0.80 + `bot-role`/`sender-role` ≥0.70 + `onebot` ≥0.65 + `needs-discussion` 升 0.75；移除 `question`。
+- **装饰字符 QQ / 视觉欺骗型用户名**（§4.25）：`_extract_at_qq` 顶部加 NFKC 归一化 + `\d{5,12}` 强校验；重复检测必须按模块归类，不能仅按症状字符串相似度。
+- **解禁类 Issue 必查 9 项**（§4.26）：bot 群角色、目标用户是否在群内、OneBot 版本、`duration` 参数语义、`_extract_at_qq` 解析、`get_group_member_info` 回读、日志、配置变更、缓存策略。`duration` 参数禁用 falsy 判空（`0` 是合法值）。
+- **校验失败短路器（强制 Pre-check，§4.24）**：任何字段出现"无建议/无法评估/空/未检测到重复"前必须先确认是否源于校验失败；如是，仅修复字段输出格式，实质性判断（分类/优先级/标签/可行性/标题/重复检测）独立基于 Issue 实质内容完成，不得整体退化。
 - **owner-driven Issue 标签权重校准**（§4.22）：`needs-info` ≤0.2-0.30（不是 0.4），`needs-discussion` 0.75-0.85（不是 0.55-0.65），`good first issue` ≤0.15（不是 0.2），`help wanted` ≤0.05-0.1。
-- **权限模型重构类 Issue 必给标签基线**（§4.20）：`enhancement` + `breaking-change` ≥0.90 + `deprecation` ≥0.75 + `permission-model` ≥0.80 + `bot-role`/`sender-role` ≥0.70 + `onebot` ≥0.65 + `needs-discussion` 升 0.75；移除 `question`。
+- **OneBot 群待办类命令七处同步清单**（新增 owner-driven 命令模板，参 §4.21）：main.py + README + 帮助命令 + `_conf_schema.json` + CHANGELOG + `_GM_COMMAND_NAMES` 元组注册 + 跨适配器兼容性文档。
+- **"提示成功但实际未生效"通用模板**（§4.26 扩展）：覆盖解禁/头衔/设精/改群名/全员禁言；通用必查项为 bot 权限 + 目标身份 + OneBot 实现 + `_extract_at_qq` + API 参数语义（`""`/`None`/`0`/缺失差异）+ 状态回读 + 适配器差异 + 提示语区分接口成功与实际生效。
 
 ## 7. 协作与维护
 
