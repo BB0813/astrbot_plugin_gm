@@ -194,6 +194,15 @@ class GroupAdminPlugin(Star):
     def is_plugin_admin(self, user_id: str) -> bool:
         return str(user_id) in [str(uid) for uid in self.config.get("plugin_admins", [])]
 
+    def _is_authorized(self, raw: dict, user_id: str = "") -> bool:
+        """是否具备插件管理权限（#132）：plugin_admins + QQ 群管理员 + QQ 群主。"""
+        uid = str(user_id or raw.get("user_id", ""))
+        if uid and self.is_plugin_admin(uid):
+            return True
+        if self._is_group_admin_or_owner(raw):
+            return True
+        return False
+
     def get_group_setting(self, group_id: str, key: str, default=None):
         """按群读取配置项，先查 group_overrides[群号][key]，否则用全局配置/默认值。"""
         overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
@@ -612,7 +621,7 @@ class GroupAdminPlugin(Star):
         "添加插件管理", "删除插件管理", "添加头衔管理", "删除头衔管理",
         "添加管理管理", "删除管理管理", "添加踢人管理", "删除踢人管理",
         "设置群配置", "查看群配置", "清除群配置", "群违规检测状态",
-        "设管", "取管", "设管理", "取消管理", "头衔", "取消头衔",
+        "设管理", "取消管理", "头衔", "取消头衔",
         "别人昵称", "改群昵称", "群昵称", "禁言", "解禁", "踢", "鞭尸",
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
         "发群公告", "删群公告", "排名", "清除数据", "举报", "status",
@@ -1300,12 +1309,13 @@ class GroupAdminPlugin(Star):
     # ----- 群违规检测管理命令（仅插件管理员） -----
 
     def _moderation_require_admin(self, event):
-        """校验消息发送者是否为插件管理员。是则返回 user_id，否则返回 None。"""
+        """校验消息发送者是否为插件管理员。是则返回 user_id，否则返回 None。
+        #132：群管理员与群主也视为插件管理员。"""
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             return None
         sender_id = str(raw.get("user_id", ""))
-        if not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             return None
         return sender_id
 
@@ -1601,7 +1611,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
+        if not self._is_authorized(raw, str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
@@ -1623,60 +1633,6 @@ class GroupAdminPlugin(Star):
 
     # ===================== 群管指令 =====================
 
-    @filter.command("设管", "添加插件管理员（支持批量）")
-    async def add_plugin_admin(self, event: AstrMessageEvent, target: str = ""):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
-            yield event.plain_result("只有插件管理员可执行此操作")
-            return
-        qq_list = _parse_qq_list(target)
-        # 也可从At组件提取
-        at_qq = self._extract_at_qq(raw)
-        if at_qq:
-            qq_list.append(at_qq)
-        qq_list = list({str(x) for x in qq_list if x})
-        if not qq_list:
-            yield event.plain_result("请提供QQ号，例如 /设管 123456 234567")
-            return
-        added = []
-        for qq in qq_list:
-            if qq not in [str(x) for x in self.config.get("plugin_admins", [])]:
-                self.config.setdefault("plugin_admins", []).append(qq)
-                added.append(qq)
-        self.save_config()
-        if added:
-            yield event.plain_result(f"已添加插件管理员: {', '.join(added)}")
-        else:
-            yield event.plain_result("所列QQ号均已是插件管理员")
-
-    @filter.command("取管", "移除插件管理员（支持批量）")
-    async def remove_plugin_admin(self, event: AstrMessageEvent, target: str = ""):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
-            yield event.plain_result("只有插件管理员可执行此操作")
-            return
-        qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
-        qq_list = list({str(x) for x in qq_list if x})
-        if not qq_list:
-            yield event.plain_result("请通过 @某人 或QQ号指定，例如 /取管 @某人")
-            return
-        removed = []
-        for qq in qq_list:
-            if qq in [str(x) for x in self.config.get("plugin_admins", [])]:
-                self.config["plugin_admins"].remove(qq)
-                removed.append(qq)
-        self.save_config()
-        if removed:
-            yield event.plain_result(f"已移除插件管理员: {', '.join(removed)}")
-        else:
-            yield event.plain_result("所列QQ号均非插件管理员")
-
     @filter.command("添加插件管理", "按群添加专项权限管理员（兼容旧命令）")
     async def add_group_admin(self, event: AstrMessageEvent, target: str = ""):
         """兼容旧命令：按群添加插件管理员已废弃，改为按群添加专项权限管理员。"""
@@ -1685,7 +1641,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
+        if not self._is_authorized(raw, str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
@@ -1710,7 +1666,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
+        if not self._is_authorized(raw, str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
@@ -1914,7 +1870,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self.is_plugin_admin(sender_id) and not self._is_group_admin(raw):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
         qq = self._extract_at_qq(raw) or self._parse_qq(target)
@@ -1940,7 +1896,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         sender_id = str(raw.get("user_id"))
-        if not self.is_plugin_admin(sender_id) and not self._is_group_admin(raw):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
         group_id = str(raw.get("group_id"))
@@ -1992,7 +1948,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
+        if not self._is_authorized(raw, str(raw.get("user_id", ""))):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
 
@@ -2096,7 +2052,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin(raw) and not self._is_group_owner(raw) and not self.is_plugin_admin(str(raw.get("user_id", ""))):
+        if not self._is_authorized(raw, str(raw.get("user_id", ""))):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
 
@@ -2176,7 +2132,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         image_url = self._extract_image_url(event)
@@ -2195,7 +2151,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         ok = await self._execute_action(event, "set_group_whole_ban",
@@ -2212,7 +2168,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         ok = await self._execute_action(event, "set_group_whole_ban",
@@ -2242,7 +2198,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
+        if not self._is_authorized(raw, str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         qq = self._extract_at_qq(raw) or self._parse_qq(target)
@@ -2264,7 +2220,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         if not content:
@@ -2291,7 +2247,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         if not notice_id:
@@ -2313,7 +2269,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         qq = self._extract_at_qq(raw)
@@ -2350,7 +2306,7 @@ class GroupAdminPlugin(Star):
             return
         sender_id = str(raw.get("user_id"))
         group_id = str(raw.get("group_id"))
-        if not self._is_group_admin_or_owner(raw) and not self.is_plugin_admin(sender_id):
+        if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有群管理员或插件管理员可执行此操作")
             return
         self.reset_group_stats(group_id)
@@ -2401,7 +2357,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
+        if not self._is_authorized(raw, str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         if not key:
@@ -2450,7 +2406,7 @@ class GroupAdminPlugin(Star):
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
             return
-        if not self.is_plugin_admin(str(raw.get("user_id"))):
+        if not self._is_authorized(raw, str(raw.get("user_id"))):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         group_id = str(raw.get("group_id"))
@@ -2519,7 +2475,7 @@ class GroupAdminPlugin(Star):
 
         # 加群申请引用回复处理（#57）
         reply_id = self._get_reply_id(event)
-        has_permission = self._is_group_admin_or_owner(raw) or self.is_plugin_admin(user_id)
+        has_permission = self._is_authorized(raw, user_id)
         if reply_id and has_permission:
             pending = self.config.get("pending_join_requests", {})
             info = pending.get(str(reply_id))
