@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+import asyncio
 import base64
 from collections import defaultdict
 from pathlib import Path
@@ -160,6 +161,16 @@ class GroupAdminPlugin(Star):
             "notify_on_violation": True,
             # ====== 撤回消息历史（对齐 astrbot_plugin_batchrecall，修复 #122） ======
             "max_message_history": 50,
+            # ====== 踢人自动撤回该成员近期消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） ======
+            "kick_recall_enabled": False,
+            "kick_recall_count": 10,
+            # ====== 语音转文字违规检测（#128） ======
+            "voice_check_enabled": False,
+            "voice_check_provider_id": "",
+            "voice_asr_endpoint": "",
+            "voice_asr_api_key": "",
+            "voice_asr_model": "",
+            "voice_check_timeout": 15,
         }
 
     def load_config(self) -> dict:
@@ -577,8 +588,29 @@ class GroupAdminPlugin(Star):
                 content_parts.append("[@]")
             elif stype == "reply":
                 content_parts.append("[引用]")
+            elif stype == "record":
+                content_parts.append("[语音]")
         content = "".join(content_parts)
         return content[:50] if content else "[无文本内容]"
+
+    def _extract_audio_urls(self, segments) -> list:
+        """从 OneBot 消息段提取语音/音频 URL（type=record/data.url 或 type=audio）。"""
+        urls = []
+        for seg in segments or []:
+            if not isinstance(seg, dict):
+                continue
+            stype = seg.get("type")
+            data = seg.get("data") or {}
+            if stype in ("record", "audio"):
+                url = data.get("url") or data.get("file") or ""
+                if url:
+                    urls.append(url)
+        return urls
+
+    def _extract_audio_url(self, segments) -> str:
+        """返回第一条语音 URL，没有则返回空串。"""
+        urls = self._extract_audio_urls(segments)
+        return urls[0] if urls else ""
 
     def _strip_command_prefix(self, text: str) -> str:
         """剥离开头的命令前缀符号（/、.、!、# 等）。"""
@@ -606,8 +638,8 @@ class GroupAdminPlugin(Star):
         "添加插件管理", "删除插件管理", "添加头衔管理", "删除头衔管理",
         "添加管理管理", "删除管理管理", "添加踢人管理", "删除踢人管理",
         "设置群配置", "查看群配置", "清除群配置", "群违规检测状态",
-        "设管理", "取消管理", "头衔", "取消头衔",
-        "别人昵称", "改群昵称", "群昵称", "禁言", "解禁", "踢", "鞭尸",
+"设管理", "取消管理", "头衔", "取消头衔",
+        "别人昵称", "改群昵称", "群昵称", "禁言", "解禁", "踢", "清用户历史", "鞭尸",
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
         "发群公告", "删群公告", "排名", "清除数据", "举报", "status",
     )
@@ -648,6 +680,73 @@ class GroupAdminPlugin(Star):
         is_bot = bool(raw.get("self_id")) and str(raw.get("self_id")) == sender_id
         msg_time = raw.get("time", int(time.time()))
         self._add_message_to_history(group_id, message_id, content, sender_id, sender_name, is_bot, int(msg_time))
+
+    async def _recognize_audio_url(self, event, audio_url: str, group_id: str) -> str:
+        """#128：将语音 URL 识别为文本。优先 AstrBot 内置 STT provider，回退到插件独立 ASR 配置。
+        返回识别文本，失败返回空串。"""
+        if not audio_url:
+            return ""
+        timeout = max(5, int(self.get_group_setting(group_id, "voice_check_timeout", 15) or 15))
+        provider_id = str(self.get_group_setting(group_id, "voice_check_provider_id", "") or "").strip()
+        # 1) AstrBot 内置 provider：优先用户指定 provider_id，否则用当前激活的 STT provider
+        try:
+            ctx = getattr(self, "context", None)
+            provider_manager = getattr(ctx, "provider_manager", None) if ctx else None
+            if provider_manager is not None:
+                from astrbot.core.provider.entities import ProviderType  # 局部导入，避免硬依赖失败
+                prov = None
+                if provider_id:
+                    try:
+                        prov = await provider_manager.get_provider_by_id(provider_id)
+                    except Exception:
+                        prov = None
+                if prov is None:
+                    try:
+                        prov = provider_manager.get_using_provider(ProviderType.SPEECH_TO_TEXT)
+                    except Exception:
+                        prov = None
+                if prov is not None and hasattr(prov, "get_text"):
+                    try:
+                        text = await asyncio.wait_for(prov.get_text(audio_url), timeout=timeout)
+                        if text:
+                            return str(text).strip()
+                    except Exception as exc:
+                        logger.warning(f"AstrBot STT provider 识别失败: {exc}")
+        except ImportError:
+            logger.debug("未安装 astrbot.core.provider.entities，回退到插件独立 API")
+        except Exception as exc:
+            logger.warning(f"AstrBot STT 调用异常: {exc}")
+        # 2) 插件独立 ASR API（OpenAI 兼容 /audio/transcriptions）
+        endpoint = str(self.get_group_setting(group_id, "voice_asr_endpoint", "") or "").strip()
+        api_key = str(self.get_group_setting(group_id, "voice_asr_api_key", "") or "").strip()
+        model = str(self.get_group_setting(group_id, "voice_asr_model", "") or "").strip() or "whisper-1"
+        if not endpoint:
+            return ""
+        try:
+            import aiohttp
+            from openai import AsyncOpenAI  # type: ignore
+            base_url = endpoint.rstrip("/")
+            if not base_url.endswith("/audio/transcriptions"):
+                base_url = base_url + ("/audio/transcriptions" if base_url.endswith("/v1") else "/v1/audio/transcriptions")
+            client = AsyncOpenAI(api_key=api_key or "EMPTY", base_url=base_url.rsplit("/audio/transcriptions", 1)[0], timeout=timeout)
+            # 简化：下载音频为字节流，调用 transcriptions.create
+            async with aiohttp.ClientSession() as session:
+                async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return ""
+                    audio_bytes = await resp.read()
+            from io import BytesIO
+            result = await client.audio.transcriptions.create(
+                model=model,
+                file=("audio.wav", BytesIO(audio_bytes)),
+            )
+            return str(getattr(result, "text", "") or "").strip()
+        except ImportError:
+            logger.warning("未安装 openai / aiohttp，无法调用独立 ASR API")
+            return ""
+        except Exception as exc:
+            logger.warning(f"独立 ASR 调用失败: {exc}")
+            return ""
 
     def _get_self_id(self, event, raw=None) -> str:
         """获取 bot 自身 QQ 号，优先 event.get_self_id()，回退 raw 字段。"""
@@ -786,6 +885,44 @@ class GroupAdminPlugin(Star):
 
     async def _kick_member(self, event: AstrMessageEvent, group_id: str, qq: str):
         return await self._execute_action(event, "kick", group_id=group_id, user_id=qq)
+
+    async def _recall_user_recent_msgs(self, event: AstrMessageEvent, group_id: str, user_id: str, count: int) -> int:
+        """撤回某用户在群内最近 count 条消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian）。
+        优先使用本地消息历史（_get_history_snapshot），为空时回退 OneBot get_group_msg_history。
+        OneBot delete_msg 只能撤回约 2 分钟内的消息，超时的会静默失败。返回实际撤回条数。"""
+        gid = str(group_id)
+        uid = str(user_id)
+        if not gid or not uid or count <= 0:
+            return 0
+        count = max(1, min(int(count), 50))
+        snapshot = await self._get_history_snapshot(event, gid)
+        if not snapshot:
+            # 本地为空：尝试 OneBot API
+            try:
+                history = await self._execute_action(event, "get_group_msg_history", return_raw=True,
+                                                     group_id=gid, count=min(self.max_history * 2, 100))
+                msgs = []
+                if isinstance(history, dict):
+                    msgs = history.get("data", {}).get("messages") or history.get("messages") or []
+                for m in reversed(msgs):
+                    sender = m.get("sender") or {}
+                    if str(sender.get("user_id", "")) != uid:
+                        continue
+                    snapshot.append((str(m.get("message_id")), "", int(m.get("time", 0)), uid, "", False))
+                    if len(snapshot) >= count:
+                        break
+            except Exception as exc:
+                logger.debug(f"踢人清历史 API 兜底失败({gid}/{uid}): {exc}")
+                return 0
+        candidates = [m for m in snapshot if m[3] == uid][:count]
+        recalled = 0
+        for m in candidates:
+            ok, err = await self._do_recall(event, m[0])
+            if ok or "已撤回" in err:
+                self._remove_message_from_history(gid, m[0])
+                recalled += 1
+            await asyncio.sleep(0.3)
+        return recalled
 
     async def _set_group_avatar(self, event: AstrMessageEvent, group_id: str, file: str):
         """修改群头像，file 可以是 URL 或本地路径或 base64。"""
@@ -1024,6 +1161,27 @@ class GroupAdminPlugin(Star):
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
                 await self._handle_violation(event, "image", group_id, user_id, mid, reason)
                 return True
+        # 4) 语音转文字检测（#128）
+        if self.get_group_setting(group_id, "voice_check_enabled", False):
+            audio_urls = self._extract_audio_urls(raw.get("message") or []) if isinstance(raw, dict) else []
+            for url in audio_urls:
+                text = await self._recognize_audio_url(event, url, group_id)
+                if not text:
+                    continue
+                violated_kind = None
+                if await self._check_profanity(text, event, group_id, user_id):
+                    violated_kind = "profanity"
+                elif await self._check_ad(text, event, group_id, user_id):
+                    violated_kind = "ad"
+                elif await self._check_link(text, event, group_id, user_id):
+                    violated_kind = "link"
+                elif await self._check_group_promotion(text, event, group_id, user_id):
+                    violated_kind = "group_promotion"
+                if violated_kind:
+                    mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                    await self._handle_violation(event, f"voice_{violated_kind}", group_id, user_id, mid,
+                                                 f"语音内容: {text[:50]}")
+                    return True
         return False
 
     # ----- 图片检测 -----
@@ -1909,17 +2067,55 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("请通过 @某人 或QQ号指定目标")
             return
         results = []
+        recalled_total = 0
+        kick_recall_enabled = bool(self.get_group_setting(group_id, "kick_recall_enabled", False))
+        kick_recall_count = max(1, min(int(self.get_group_setting(group_id, "kick_recall_count", 10) or 10), 50))
         for qq in qq_list:
+            # #145：踢人前撤回该成员近期消息（踢出后无法再拉取其历史）
+            recalled = 0
+            if kick_recall_enabled:
+                recalled = await self._recall_user_recent_msgs(event, group_id, qq, kick_recall_count)
+                recalled_total += recalled
             ok = await self._kick_member(event, group_id, qq)
             if ok and self.config.get("reject_re_add", False):
                 await self._execute_action(event, "reject_add", group_id=group_id, user_id=qq)
             results.append((qq, ok))
+            if recalled:
+                logger.info(f"踢人前撤回 {group_id}/{qq} 近期 {recalled} 条消息")
         ok_list = [q for q, ok in results if ok]
         bad_list = [q for q, ok in results if not ok]
         msg = f"踢出成功: {', '.join(ok_list)}" if ok_list else "踢出全部失败"
         if bad_list:
             msg += f"\n失败: {', '.join(bad_list)}"
+        if kick_recall_enabled and recalled_total > 0:
+            msg += f"\n已撤回被踢成员近期消息 {recalled_total} 条"
         yield event.plain_result(msg)
+
+    @filter.command("清用户历史", "撤回某用户在本群的最近 N 条消息（/清用户历史 @某人 [N]）")
+    async def clear_user_history_cmd(self, event: AstrMessageEvent, target: str = ""):
+        """手动撤回某用户在群内的最近 N 条消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian）。
+        不踢人，仅撤回。"""
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        group_id = str(raw.get("group_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有插件管理员或群管理员可执行此操作")
+            return
+        qq_list = self._extract_at_qqs(raw) or _parse_qq_list(target)
+        if not qq_list:
+            yield event.plain_result("请通过 @某人 或QQ号指定目标，例如：/清用户历史 @某人 20")
+            return
+        tail_nums = re.findall(r"\d+", target or "")
+        count = int(tail_nums[-1]) if tail_nums else 10
+        count = max(1, min(count, 50))
+        total = 0
+        for qq in qq_list:
+            recalled = await self._recall_user_recent_msgs(event, group_id, qq, count)
+            total += recalled
+        yield event.plain_result(f"已尝试撤回 {len(qq_list)} 个用户的最近消息，实际撤回 {total} 条（上限 {count} 条/人）")
 
     @filter.command("撤回", "撤回消息（/撤回 + 引用消息 / /撤回 @用户 N / /撤回 N）")
     async def recall_cmd(self, event: AstrMessageEvent):

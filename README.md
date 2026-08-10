@@ -14,7 +14,8 @@
 |------|---------|------|
 | `/禁言 @某人 [分钟]` | 插件管理员 | 禁言指定成员（默认 10 分钟） |
 | `/解禁 @某人` | 插件管理员 | 解除禁言 |
-| `/踢 @某人` | 插件管理员 | 踢出群成员（支持批量，可配合配置拒绝重新加群） |
+| `/踢 @某人` | 插件管理员 | 踢出群成员（支持批量，可配合配置拒绝重新加群；#145 开启 kick_recall_enabled 时同时清历史） |
+| `/清用户历史 @某人 [N]` | 插件管理员 | 撤回某用户在本群的最近 N 条消息（最多 50；#145） |
 | `/鞭尸 @某人` | 插件管理员 | 长期禁言被@的人（29 天 23 小时 59 分） |
 | `/头衔 @某人 标题` | 插件管理员 | 设置成员专属头衔 |
 | `/取消头衔 @某人` | 插件管理员 | 取消成员专属头衔 |
@@ -94,6 +95,14 @@ pip install astrbot_plugin_group_admin
 | `enabled_groups` | list | `[]` | 启用违规检测的群号列表（`*` / `all` 表示全部；推荐按群覆盖） |
 | `group_overrides` | dict | `{}` | 按群独立配置覆盖：`{群号: {key: value}}` |
 | `max_message_history` | int | `50` | 每群内存缓存的撤回消息历史条数（用于 /撤回 N 与 /撤回自身 N） |
+| `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
+| `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
+| `voice_check_enabled` | bool | `false` | 启用语音消息转文字违规检测（#128） |
+| `voice_check_provider_id` | string | `""` | AstrBot 内置 STT provider ID（#128，可选，留空用当前激活 provider） |
+| `voice_asr_endpoint` | string | `""` | 独立 ASR API 端点（#128，可选兜底） |
+| `voice_asr_api_key` | string | `""` | 独立 ASR API Key（#128，可选兜底） |
+| `voice_asr_model` | string | `""` | 独立 ASR 模型名（#128，默认 whisper-1） |
+| `voice_check_timeout` | int | `15` | ASR 识别超时秒数（#128） |
 
 ### 配置示例
 
@@ -130,7 +139,7 @@ pip install astrbot_plugin_group_admin
 }
 ```
 
-按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）。
+按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测（`voice_check_enabled`、`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）。
 ---
 
 ## `/撤回` 用法与兼容性
@@ -156,6 +165,18 @@ pip install astrbot_plugin_group_admin
 - 若 OneBot 实现不支持 `get_group_msg_history` 且本地历史也为空，则提示改用「引用消息」撤回。
 - 本地历史仅记录进程启动后经过监听的消息，重启前历史不可恢复。
 
+**踢人清历史（#145，对齐 [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian)）**：
+
+- 配置 `kick_recall_enabled=true` 后，执行 `/踢 @某人` 会自动撤回被踢成员最近 `kick_recall_count`（默认 10，最多 50）条消息（踢出前完成，因为踢出后无法再拉取其历史）。
+- 新增 `/清用户历史 @某人 [N]`：单独执行清历史，不踢人。
+- OneBot `delete_msg` 只能撤回约 2 分钟内的消息，超时的会静默失败。
+
+**语音转文字违规检测（#128）**：
+
+- 配置 `voice_check_enabled=true` 后，对群内语音消息自动 ASR 识别，复用违规检测链路（骂人 / 广告 / 链接 / 群号推广）。
+- ASR 识别顺序：① `voice_check_provider_id` 指定的 AstrBot 内置 STT provider；② 未指定时使用 AstrBot 当前激活的 STT provider；③ AstrBot 不可用时回退到 `voice_asr_endpoint` + `voice_asr_api_key` + `voice_asr_model` 配置的 OpenAI 兼容 `/audio/transcriptions` 接口。
+- 命中违规则撤回语音消息并按对应时长禁言。
+
 ---
 
 ## 权限说明
@@ -174,7 +195,6 @@ pip install astrbot_plugin_group_admin
 ## 命令使用示例
 
 ```
-
 # 禁言某成员 30 分钟
 /禁言 @小明 30
 
