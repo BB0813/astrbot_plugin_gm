@@ -17,13 +17,6 @@
         "hint": "踢出后是否自动拒绝该用户再次加群。",
         "default": false
     },
-    "plugin_admins": {
-        "description": "插件管理员QQ号列表（兼容配置；#132 起 QQ 群管理员与群主自动获得插件管理员权限）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "可选。QQ 群管理员与群主已经自动具备插件管理员权限；此项仅在需要跨群指定插件管理员、或授予非群管理员插件权限时填写。/设管 与 /取管 命令已移除。",
-        "default": []
-    },
     "auto_recall_keywords": {
         "description": "Bot发言自动撤回关键词列表（推荐按群覆盖）",
         "type": "list",

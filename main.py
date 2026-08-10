@@ -91,7 +91,6 @@ class GroupAdminPlugin(Star):
             "show_recall_notice": True,
             "mute_notice": True,
             "reject_re_add": False,
-            "plugin_admins": [],
             "groups": {},
             # 按操作类型分别配置管理员（#34 权限系统重构）
             "title_admins": [],
@@ -191,17 +190,9 @@ class GroupAdminPlugin(Star):
 
     # ===================== 工具方法 =====================
 
-    def is_plugin_admin(self, user_id: str) -> bool:
-        return str(user_id) in [str(uid) for uid in self.config.get("plugin_admins", [])]
-
     def _is_authorized(self, raw: dict, user_id: str = "") -> bool:
-        """是否具备插件管理权限（#132）：plugin_admins + QQ 群管理员 + QQ 群主。"""
-        uid = str(user_id or raw.get("user_id", ""))
-        if uid and self.is_plugin_admin(uid):
-            return True
-        if self._is_group_admin_or_owner(raw):
-            return True
-        return False
+        """是否具备插件管理权限：仅 QQ 群管理员 + QQ 群主。"""
+        return self._is_group_admin_or_owner(raw)
 
     def get_group_setting(self, group_id: str, key: str, default=None):
         """按群读取配置项，先查 group_overrides[群号][key]，否则用全局配置/默认值。"""
@@ -269,8 +260,6 @@ class GroupAdminPlugin(Star):
 
     def has_title_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
         uid = str(user_id)
-        if self.is_plugin_admin(uid):
-            return True
         title_admins = [str(x) for x in self.get_group_setting(group_id, "title_admins", [])]
         if uid in title_admins:
             return True
@@ -280,8 +269,6 @@ class GroupAdminPlugin(Star):
 
     def has_kick_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
         uid = str(user_id)
-        if self.is_plugin_admin(uid):
-            return True
         kick_admins = [str(x) for x in self.get_group_setting(group_id, "kick_admins", [])]
         if uid in kick_admins:
             return True
@@ -291,8 +278,6 @@ class GroupAdminPlugin(Star):
 
     def has_group_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
         uid = str(user_id)
-        if self.is_plugin_admin(uid):
-            return True
         ga_admins = [str(x) for x in self.get_group_setting(group_id, "group_admin_admins", [])]
         if uid in ga_admins:
             return True
@@ -2432,7 +2417,6 @@ class GroupAdminPlugin(Star):
         lines = [
             f"show_recall_notice: {c.get('show_recall_notice', True)}",
             f"reject_re_add: {c.get('reject_re_add', False)}",
-            f"plugin_admins: {', '.join(map(str, c.get('plugin_admins', []))) or '空'}",
             f"auto_recall_keywords: {c.get('auto_recall_keywords', [])}",
             f"violation_keywords: {len(c.get('violation_keywords', []))} 个",
             f"rank_top_n: {c.get('rank_top_n', 10)}",
