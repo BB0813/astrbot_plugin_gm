@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 104 次
+> 累计反思 109 次
 
 ## 1. 项目简介
 
@@ -36,6 +36,15 @@ NFKC 对花体字/数学字母（U+1D400-U+1D7FF）无效；正确方案：白�
 
 ### 2.9 撤回命令族同步清单
 五处（main.py + README + 帮助 + schema + CHANGELOG）；多媒体层/owner-driven 命令扩展为七处（+ `_GM_COMMAND_NAMES` 元组注册 + 跨适配器文档）。
+
+### 2.10 AstrBot 命令注册硬约束
+AstrBot 插件仅删除 handler 不足以真正移除命令，**必须同步更新 `_GM_COMMAND_NAMES` 元组**。命令移除的七处同步：main.py + `_GM_COMMAND_NAMES` + README/帮助 + CHANGELOG + metadata.yaml + i18n 文件 + 其他文档。
+
+### 2.11 破坏性配置变更审查规则
+删除默认配置项/删除既有配置项 → 必须强制 `full` 策略；`quick` 策略不应用于需要评估业务影响的变更。必查项：替代方案完备性、迁移路径、旧配置忽略提示、CHANGELOG/升级指引。
+
+### 2.12 硬编码替代可配置项规范
+`batch_max_count` 等可配置项改为硬编码属于 breaking-change（0.90-0.95），应在审查中显式评估影响范围，CHANGELOG 应有独立 "Breaking Changes" 节。
 
 ## 3. Issue 分析沉淀（仓库 6 大标准模式）
 
@@ -117,6 +126,17 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 ### 3.9 撤回增强族第 5 种（#142 自动+手动批量撤回）
 与 #140 决策路径同构需显式互引；`breaking-change` 置信度精细化 4 档（新增 false ≤0.30 / 新增 true 0.55-0.65 silent behavior / 修改默认 0.70-0.80 / 删除 0.90-0.95）。撤回 ≠ 清除语义边界必明示。触发源区分（仅 `/踢` vs 任意踢出事件需订阅 OneBot `notice`）。
 
+### 3.10 权限模型重构类（PR #147/#149 经验）
+从 #130 到 #147 到 #149 的持续演进路径：分散 `is_plugin_admin` → 统一 `_is_authorized()` → 群原生权限替代 `plugin_admins`。简化模型风险等级：中（功能完整性、文档一致性），收紧权限风险等级：低（向后兼容），放宽权限风险等级：高（滥用风险、隐私合规）。
+
+### 3.11 新指令型 enhancement 审查要点
+- **`parser` 标签慎用**：静态命令匹配（如"给我头衔"）不涉及参数解析，不应给 `parser` 高置信度（≤0.3）
+- **速率限制必查**：新指令应评估防滥用冷却机制（`rate-limit` 标签 0.60-0.70）
+- **工作量估算完整性**：需计入冷却机制、速率限制等额外组件
+
+### 3.12 加群申请功能系列（#150 新建）
+加群申请类 Issue 已成为仓库系列功能点（#57 引用回复 + #150 查看列表），天然需要 `permission` + `privacy` + `api` 三类标签协同。核心依赖 OneBot API `get_group_add_request` 应显式标注 `api` 标签（置信度 0.85）。
+
 ## 4. 标签与权限配置
 
 - 标签建议覆盖主类型/模块/风险；高频模块：`recall`/`message-history`/`command`/`parser`/`onebot`/`group-management`/`moderation`/`stt`/`voice`/`title`/`permission-model`/`onebot-extension`。
@@ -131,6 +151,8 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - 撤回相关改动必须做**对称性检查**：`recall_cmd` 与 `recall_user_cmd` 在入口分流/缓存读写/用法提示上对称；`message_history` 写入路径不得被业务早退链吞噬。
 - **⚠️ 隐私合规强制检查**：涉及用户数据删除/修改时，必须评估滥用风险、合规风险、不可逆性，并添加 `privacy` 标签。
 - **⚠️ 外部仓库参考必验证**：引用外部仓库实现前，必须先访问验证，不能仅基于 Issue 链接给出工作量估算。
+- **⚠️ 速率限制必查**：新指令型 enhancement 应评估防滥用冷却机制，已触发多次遗漏警告。
+- **⚠️ `parser` 标签滥用风险**：静态命令匹配不涉及参数解析，`parser` 标签置信度应 ≤0.3。
 - 验证清单：`python -m py_compile main.py` ≥ `ast.parse`；本地缓存回退类应附最小单元测试；README/帮助/schema/CHANGELOG 必须在同一 PR 同步；提交信息避免批量重复 `chore` commit（参 §2.7/2.8）；行号引用必须标注"已读取 main.py 验证"或"约 Lxxxx"模糊表述。
 - 新增跨私聊/群聊工作流时，先设计状态机/申请 ID/权限边界/持久化/过期/并发幂等/隐私。
 - `ast.parse` ≠ 真实加载：装饰器注册、命令注册等不会在 ast 阶段触发，**PR 验证应替换为最小 AstrBot 启动验证**。
