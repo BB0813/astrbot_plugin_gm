@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 120 次
+> 累计反思 121 次
 
 ## 1. 项目简介
 
@@ -45,8 +45,6 @@ AstrBot 插件仅删除 handler 不足以真正移除命令，**必须同步更�
 - [ ] `_GM_COMMAND_NAMES` 是否与实际命令同步
 - [ ] 硬编码替代可配置项时的 breaking-change 显式标注
 - [ ] 权限变更时是否涉及帮助文本/错误提示同步
-- [ ] 新增配置项默认值是否安全（false 优于 true）
-- [ ] 配置项数量 ≥5 或代码变更 ≥200 行时建议升级策略
 
 ### 2.11 破坏性配置变更审查规则
 删除默认配置项/删除既有配置项 → 必须强制 `full` 策略；`quick` 策略不应用于需要评估业务影响的变更。必查项：替代方案完备性、迁移路径、旧配置忽略提示、CHANGELOG/升级指引。
@@ -134,14 +132,8 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 ### 3.9 撤回增强族第 5 种（#142 自动+手动批量撤回）
 与 #140 决策路径同构需显式互引；`breaking-change` 置信度精细化 4 档（新增 false ≤0.30 / 新增 true 0.55-0.65 silent behavior / 修改默认 0.70-0.80 / 删除 0.90-0.95）。撤回 ≠ 清除语义边界必明示。触发源区分（仅 `/踢` vs 任意踢出事件需订阅 OneBot `notice`）。
 
-### 3.10 权限模型重构类（PR #147/#149 经验）
+### 3.10 权限模型重构类（#130/#132/#139/#147/#149）
 从 #130 到 #147 到 #149 的持续演进路径：分散 `is_plugin_admin` → 统一 `_is_authorized()` → 群原生权限替代 `plugin_admins`。简化模型风险等级：中（功能完整性、文档一致性），收紧权限风险等级：低（向后兼容），放宽权限风险等级：高（滥用风险、隐私合规）。
-
-**命令合并类 Issue 审查要点**：
-- 引用命令名之前必须先 grep 验证真实命令名（避免"清用户历史"vs"清空历史记录"混淆）
-- 底层实现是否相同（如都调用 `_recall_user_recent_msgs`）需代码验证
-- 建议提供渐进式迁移路径（A 废弃标记 vs B 直接删除）
-- breaking-change 评分 0.90-0.95，需在 CHANGELOG 显式标注 `[BREAKING]`
 
 **权限变更审查必查清单**：
 - 替代方案是否完备？（`title_admins`/`group_admin_admins`/`kick_admins` 覆盖场景？）
@@ -150,10 +142,7 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - README/文档中是否提及被移除的命令/配置？
 - `_GM_COMMAND_NAMES` 是否与实际命令同步？
 - 是否需要 CHANGELOG/升级指引？
-- 权限变更方向风险等级：收紧→低 / 简化→中 / 放宽→高
-
-**硬编码替代可配置项规范**：
-`batch_max_count` 等可配置项改为硬编码属于 breaking-change（0.90-0.95），应显式评估影响范围，CHANGELOG 应有独立 "Breaking Changes" 节。
+- 硬编码替代可配置项时是否显式评估 breaking-change 并在 CHANGELOG 标注？
 
 ### 3.11 新指令型 enhancement 审查要点
 - **`parser` 标签慎用**：静态命令匹配（如"给我头衔"）不涉及参数解析，不应给 `parser` 高置信度（≤0.3）
@@ -181,7 +170,22 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - 复用 `_is_group_admin_or_owner` 做权限校验
 - 复用 `pending_join_requests` 字段和 `_handle_group_request` 封装
 
-### 3.13 审查工具失败处理与增量审查风险
+### 3.13 命令合并类 Issue 审查要点
+命令合并（保留 A/废弃 B）属于纯减法类 enhancement，需特殊处理：
+- **命令名验证强制化**：引用任何命令名之前，必须先用 grep 验证 main.py 中的实际定义
+- **七处同步清单**：main.py + `_GM_COMMAND_NAMES` + README + CHANGELOG + metadata.yaml + i18n（如有）+ 其他文档
+- **breaking-change 标注方式**：建议在 CHANGELOG 中使用 `[BREAKING]` 标签，明确删除命令的迁移路径
+- **deprecation vs 完全移除**：若不确定，优先推荐方案 A（废弃标记），提供渐进式迁移路径
+- **标签推荐**：`enhancement` + `command` + `cleanup`/`refactoring` + `breaking-change`（若采用直接删除方案）
+
+### 3.14 增量审查特殊风险
+当 PR 合并了多个提交或包含大量配置变更时，quick 策略可能不足：
+- **配置项数量阈值**：新增配置项 ≥5 时建议升级策略
+- **代码变更量阈值**：变更 ≥200 行时建议升级策略
+- **合并提交前验证**：需确认被合并的 PR 是否已审查（如 PR #148 合并 PR #149）
+- **审查工具失败处理**：验证失败时应拒绝提交，标记为"manual review required"，禁止产生无评分输出
+
+### 3.15 审查工具失败处理与增量审查风险
 **审查失败场景处理**：
 - 工具输出验证失败时，应自动降级为"manual review required"
 - 禁止产生无评分的审查决策（评分 None 应触发告警）
@@ -195,26 +199,25 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 **配置项变更审查清单**：
 - 新配置项默认值是否安全？（false 优于 true）
 - 枚举值是否有边界校验？
-- 数值范围是否在 schema 中限定（如 1-50）？
+- 数值范围是否在 schema 中限定（1-50）？
 - 配置项文档是否与代码注释一致？
-- 新增配置项数量 ≥5 或代码变更 ≥200 行应升级策略
 
-**审查工具失败处理规范**：
-- 审查输出验证失败时，应自动降级为"manual review required"
-- 禁止产生无评分的审查决策（评分 None 应触发告警）
-- 验证失败时应拒绝提交，标记为"审查失败"
-
-### 3.14 Issue 原标题标记解析
+### 3.16 Issue 原标题标记解析
 原标题标记（如 `[bug]`/`[enhancement]`/`[high]` 等）是分类/优先级的重要信号，**分析时必须读取并响应**：
 - 原标题标注 `[bug]` → 分类应为 `bug`，禁止降级为 `other`
 - 原标题标注 `[high]` → 优先级至少 medium，高优先级需明确理由
 - 持久化类 Issue 需检查存储层（内存 dict 缺落盘逻辑是常见根因）
+- **命令合并类 Issue**：原标题已含 `[enhancement][low]` 等标记时，分析应确认是否应基于代码规模提升优先级（不能仅依赖标签）
+- **Owner-driven enhancement**：可适度降低 `needs-discussion` 置信度（方案明确无需深度讨论）
+- **标签置信度校准**：`cleanup`/`refactoring` 标签适用于代码清理类 Issue；`recall` 与 `message-history` 存在语义重叠建议合并
 
 ## 4. 标签与权限配置
 
 - 标签建议覆盖主类型/模块/风险；高频模块：`recall`/`message-history`/`command`/`parser`/`onebot`/`group-management`/`moderation`/`stt`/`voice`/`title`/`permission-model`/`onebot-extension`。
 - **⚠️ `privacy` 标签 P0 级强制**：涉及用户数据删除/修改时（清历史、清除记录等），必须添加 `privacy`(0.70-0.80)。已触发 P0 缺失警告 2 次。
 - **owner-driven 标签权重校准**：`needs-info` ≤0.2-0.30（缺决策非信息），`needs-discussion` 0.75-0.85，`good first issue` ≤0.15，`help wanted` ≤0.05-0.1。
+- **标签体系一致性**：建议建立仓库特定标签字典，减少随意性；`recall` 与 `message-history` 存在语义重叠建议合并为单一标签
+- **命令合并类标签**：`cleanup`/`refactoring` 标签更贴切代码清理类 Issue；`deprecation` 适用于保留命令时显式废弃旧命令的场景
 - **插件管理员**：`plugin_admins` 或 `/设管` 维护，群主天然具备。QQ 官方权限（禁言/踢人/撤回/设精）依赖机器人群内官方身份。专项权限按群覆盖：`title_admins`/`group_admin_admins`/`kick_admins`；`group_overrides` 嵌套结构 + `0` 是合法配置语义。
 
 ## 5. 开发约定
@@ -229,12 +232,13 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - **⚠️ 硬编码替代可配置项**：必须显式评估 breaking-change 并在 CHANGELOG 标注
 - **⚠️ `parser` 标签滥用风险**：静态命令匹配不涉及参数解析，`parser` 标签置信度应 ≤0.3。
 - **⚠️ 审查工具失败处理**：验证失败时应拒绝提交标记"审查失败"，禁止产生无评分输出
-- **⚠️ 审查策略升级阈值**：配置项 ≥5 或代码变更 ≥200 行应升级策略
-- **⚠️ 命令合并类 Issue 必检**：引用命令名之前必须先 grep 验证真实命令名；七处同步清单（main.py + `_GM_COMMAND_NAMES` + README + CHANGELOG + metadata.yaml + i18n + 其他文档）；方案设计应提供渐进式迁移路径；breaking-change 需在 CHANGELOG 显式标注
 - **⚠️ Issue 标题标记必响应**：原标题的 `[bug]`/`[high]` 等标记是分类/优先级信号，分析时必须读取并体现在结论中
+- **⚠️ 命令名验证强制化**：引用任何命令名之前，必须先用 grep 验证 main.py 中的实际定义（避免命令名不一致错误）
+- **⚠️ 增量审查风险**：合并提交前需确认被合并 PR 是否已审查；配置项 ≥5 或代码变更 ≥200 行应升级策略
 - 验证清单：`python -m py_compile main.py` ≥ `ast.parse`；本地缓存回退类应附最小单元测试；README/帮助/schema/CHANGELOG 必须在同一 PR 同步；提交信息避免批量重复 `chore` commit（参 §2.7/2.8）；行号引用必须标注"已读取 main.py 验证"或"约 Lxxxx"模糊表述。
 - 新增跨私聊/群聊工作流时，先设计状态机/申请 ID/权限边界/持久化/过期/并发幂等/隐私。
 - `ast.parse` ≠ 真实加载：装饰器注册、命令注册等不会在 ast 阶段触发，**PR 验证应替换为最小 AstrBot 启动验证**。
+- 命令合并类 Issue 应检查底层实现是否相同（如 `/清用户历史` 与 `/撤回 @用户 N` 是否复用 `_recall_user_recent_msgs`）
 
 ## 6. 协作与维护
 
