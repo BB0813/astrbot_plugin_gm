@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 109 次
+> 累计反思 110 次
 
 ## 1. 项目简介
 
@@ -129,13 +129,42 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 ### 3.10 权限模型重构类（PR #147/#149 经验）
 从 #130 到 #147 到 #149 的持续演进路径：分散 `is_plugin_admin` → 统一 `_is_authorized()` → 群原生权限替代 `plugin_admins`。简化模型风险等级：中（功能完整性、文档一致性），收紧权限风险等级：低（向后兼容），放宽权限风险等级：高（滥用风险、隐私合规）。
 
+**权限变更审查必查清单**：
+- 替代方案是否完备？（`title_admins`/`group_admin_admins`/`kick_admins` 覆盖场景？）
+- 旧配置迁移路径是否明确？
+- 破坏性影响是否在 PR 描述中充分说明？
+- README/文档中是否提及被移除的命令/配置？
+- `_GM_COMMAND_NAMES` 是否与实际命令同步？
+- 是否需要 CHANGELOG/升级指引？
+
+**硬编码替代可配置项规范**：
+`batch_max_count` 等可配置项改为硬编码属于 breaking-change（0.90-0.95），应显式评估影响范围，CHANGELOG 应有独立 "Breaking Changes" 节。
+
 ### 3.11 新指令型 enhancement 审查要点
 - **`parser` 标签慎用**：静态命令匹配（如"给我头衔"）不涉及参数解析，不应给 `parser` 高置信度（≤0.3）
-- **速率限制必查**：新指令应评估防滥用冷却机制（`rate-limit` 标签 0.60-0.70）
-- **工作量估算完整性**：需计入冷却机制、速率限制等额外组件
+- **速率限制必查**：新指令应评估防滥用冷却机制（`rate-limit` 标签 0.60-0.70）；命令型 Issue 也应检查 throttling
+- **工作量估算完整性**：需计入冷却机制、速率限制等额外组件（可能增加 25-35 行）
+- **API 兼容性验证**：OneBot API 调用需检查 Bot 自身权限要求、目标用户权限要求、官方平台限制
+
+### 3.13 速率限制与冷却机制（新指令型 Issue 扩展）
+涉及用户可控动作的新命令，应评估滥用场景：
+- 头衔切换：频繁切换场景 → 建议冷却时间（如 1 小时/次），配置项 `title_change_cooldown: int`
+- 配置项设计：按群覆盖能力 + 默认值安全性 + 滥用防护机制
 
 ### 3.12 加群申请功能系列（#150 新建）
-加群申请类 Issue 已成为仓库系列功能点（#57 引用回复 + #150 查看列表），天然需要 `permission` + `privacy` + `api` 三类标签协同。核心依赖 OneBot API `get_group_add_request` 应显式标注 `api` 标签（置信度 0.85）。
+加群申请类 Issue 已成为仓库系列功能点（#57 引用回复 + #150 查看列表），天然需要 `permission` + `privacy` + `api` 三类标签协同。
+
+**标签补全要求**：
+- `api-integration`(0.75-0.85)：核心依赖 OneBot API `get_group_add_request` 应显式标注
+- `query`(0.65-0.75)：纯查询操作，与 `command` 组合使用更精准
+- `api`(置信度 0.85)：涉及具体 API 调用应显式标注
+
+**可行性深化要点**：
+- API 返回结构：[{req_type, user_id, nickname, comment, flag, seq}]
+- 需处理 seq 作为 approve/approve_list 参数
+- 建议限制单次返回 ≤50 条，超出提示分页或时间范围
+- 复用 `_is_group_admin_or_owner` 做权限校验
+- 复用 `pending_join_requests` 字段和 `_handle_group_request` 封装
 
 ## 4. 标签与权限配置
 
@@ -152,6 +181,8 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - **⚠️ 隐私合规强制检查**：涉及用户数据删除/修改时，必须评估滥用风险、合规风险、不可逆性，并添加 `privacy` 标签。
 - **⚠️ 外部仓库参考必验证**：引用外部仓库实现前，必须先访问验证，不能仅基于 Issue 链接给出工作量估算。
 - **⚠️ 速率限制必查**：新指令型 enhancement 应评估防滥用冷却机制，已触发多次遗漏警告。
+- **⚠️ 权限变更审查必检项**：替代方案完备性 + 旧配置迁移 + 破坏性说明 + 文档同步 + `_GM_COMMAND_NAMES` 同步 + CHANGELOG
+- **⚠️ 硬编码替代可配置项**：必须显式评估 breaking-change 并在 CHANGELOG 标注
 - **⚠️ `parser` 标签滥用风险**：静态命令匹配不涉及参数解析，`parser` 标签置信度应 ≤0.3。
 - 验证清单：`python -m py_compile main.py` ≥ `ast.parse`；本地缓存回退类应附最小单元测试；README/帮助/schema/CHANGELOG 必须在同一 PR 同步；提交信息避免批量重复 `chore` commit（参 §2.7/2.8）；行号引用必须标注"已读取 main.py 验证"或"约 Lxxxx"模糊表述。
 - 新增跨私聊/群聊工作流时，先设计状态机/申请 ID/权限边界/持久化/过期/并发幂等/隐私。
