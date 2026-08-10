@@ -12,7 +12,6 @@
 
 | 命令 | 所需权限 | 说明 |
 |------|---------|------|
-| `/设管 @某人` | 已废弃 | （已废弃）插件管理员由 QQ 群管理员与群主自动识别 |
 | `/禁言 @某人 [分钟]` | 插件管理员 | 禁言指定成员（默认 10 分钟） |
 | `/解禁 @某人` | 插件管理员 | 解除禁言 |
 | `/踢 @某人` | 插件管理员 | 踢出群成员（支持批量，可配合配置拒绝重新加群） |
@@ -90,7 +89,6 @@ pip install astrbot_plugin_group_admin
 | `show_recall_notice` | bool | `true` | 撤回操作后在群里发送提示 |
 | `mute_notice` | bool | `true` | 禁言 / 解禁后回复结果 |
 | `reject_re_add` | bool | `false` | 踢人后自动拒绝该用户再次加群 |
-| `plugin_admins` | list | `[]` | 插件管理员 QQ 列表（可使用 `/设管` 动态添加） |
 | `auto_recall_keywords` | list | `[]` | Bot 发言自动撤回关键词列表（推荐按群覆盖） |
 | `auto_recall_enabled_groups` | list | `[]` | 启用自动撤回的群 ID 列表（推荐按群覆盖） |
 | `enabled_groups` | list | `[]` | 启用违规检测的群号列表（`*` / `all` 表示全部；推荐按群覆盖） |
@@ -102,10 +100,11 @@ pip install astrbot_plugin_group_admin
 ```json
 {
   "show_recall_notice": true,
-  "reject_re_add": false,
-  "plugin_admins": ["123456789", "987654321"]
+  "reject_re_add": false
 }
 ```
+
+> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，无需在配置中手动指定。
 
 ### 按群覆盖示例
 
@@ -163,13 +162,12 @@ pip install astrbot_plugin_group_admin
 
 本插件采用 **两层权限** 设计：
 
-1. **插件管理员（#132）**：拥有使用所有管理命令的权限。识别方式：
-   - `plugin_admins` 配置列表中的 QQ 号
+1. **插件管理员**：拥有使用所有管理命令的权限。识别方式：
    - QQ 群管理员
    - QQ 群主
 2. **专项权限管理员**：按群覆盖的 `title_admins`、`group_admin_admins`、`kick_admins` 等专项权限列表中的人，仅对相应操作生效。
 
-> **#132 变更**：`/设管` 和 `/取管` 命令已移除。绝大多数群中群管理员与群主天然具备插件管理员身份。`plugin_admins` 配置项保留作为兼容（如需跨群插件管理员可在配置文件中设置）。
+> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
 
 ---
 
