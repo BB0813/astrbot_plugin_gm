@@ -88,7 +88,7 @@
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
         "items": {},
-        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation、max_message_history。也可在群内用 /设置群配置 key value 动态设置。",
+        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation、max_message_history、kick_recall_enabled、kick_recall_count、voice_check_enabled、voice_check_provider_id、voice_asr_endpoint、voice_asr_api_key、voice_asr_model、voice_check_timeout。也可在群内用 /设置群配置 key value 动态设置。",
         "default": {}
     },
     "api_type": {
@@ -278,5 +278,53 @@
         "type": "int",
         "hint": "用于 /撤回 N 与 /撤回自身 N 的历史回退。仅记录进程启动后经过监听的消息，重启前历史不可恢复。",
         "default": 50
+    },
+    "kick_recall_enabled": {
+        "description": "踢人时自动撤回该成员最近消息（#145）",
+        "type": "bool",
+        "hint": "开启后执行 /踢 时自动撤回被踢成员最近的消息，条数由 kick_recall_count 控制。可按群覆盖。OneBot delete_msg 仅对约 2 分钟内的消息有效，超时的会静默失败。",
+        "default": false
+    },
+    "kick_recall_count": {
+        "description": "踢人撤回消息条数（#145）",
+        "type": "int",
+        "hint": "踢人时自动撤回该成员最近的消息条数，范围 1-50。可按群覆盖。",
+        "default": 10
+    },
+    "voice_check_enabled": {
+        "description": "启用语音消息转文字违规检测（#128）",
+        "type": "bool",
+        "hint": "开启后对群内语音消息自动 ASR 识别并复用违规检测链路（骂人/广告/链接/群号推广）。可按群覆盖。",
+        "default": false
+    },
+    "voice_check_provider_id": {
+        "description": "AstrBot STT provider ID（#128，可选）",
+        "type": "string",
+        "hint": "指定 AstrBot 已配置的语音识别 provider ID（如 openai_whisper_api），留空则使用 AstrBot 当前激活的 STT provider。可按群覆盖。",
+        "default": ""
+    },
+    "voice_asr_endpoint": {
+        "description": "独立 ASR API endpoint（#128，可选兜底）",
+        "type": "string",
+        "hint": "当 AstrBot 内置 STT 不可用时回退到此 OpenAI 兼容 /audio/transcriptions 端点（如 https://api.openai.com/v1）。",
+        "default": ""
+    },
+    "voice_asr_api_key": {
+        "description": "独立 ASR API Key（#128，可选兜底）",
+        "type": "string",
+        "hint": "对应 voice_asr_endpoint 的 API Key。无 Key 的本地服务可留空。",
+        "default": ""
+    },
+    "voice_asr_model": {
+        "description": "独立 ASR 模型名（#128）",
+        "type": "string",
+        "hint": "OpenAI Whisper 默认 whisper-1；本地自托管服务填写对应模型名。",
+        "default": ""
+    },
+    "voice_check_timeout": {
+        "description": "ASR 识别超时秒数（#128）",
+        "type": "int",
+        "hint": "语音转文字请求的超时时间，范围 5-60 秒。",
+        "default": 15
     }
 }
