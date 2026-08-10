@@ -1,6 +1,6 @@
 # 项目概述：mjy1113451/astrbot_plugin_gm
 
-> 累计反思 110 次
+> 累计反思 115 次
 
 ## 1. 项目简介
 
@@ -39,6 +39,12 @@ NFKC 对花体字/数学字母（U+1D400-U+1D7FF）无效；正确方案：白�
 
 ### 2.10 AstrBot 命令注册硬约束
 AstrBot 插件仅删除 handler 不足以真正移除命令，**必须同步更新 `_GM_COMMAND_NAMES` 元组**。命令移除的七处同步：main.py + `_GM_COMMAND_NAMES` + README/帮助 + CHANGELOG + metadata.yaml + i18n 文件 + 其他文档。
+
+**Quick 模式必检清单**：
+- [ ] README/文档中是否提及被移除的命令/配置
+- [ ] `_GM_COMMAND_NAMES` 是否与实际命令同步
+- [ ] 硬编码替代可配置项时的 breaking-change 显式标注
+- [ ] 权限变更时是否涉及帮助文本/错误提示同步
 
 ### 2.11 破坏性配置变更审查规则
 删除默认配置项/删除既有配置项 → 必须强制 `full` 策略；`quick` 策略不应用于需要评估业务影响的变更。必查项：替代方案完备性、迁移路径、旧配置忽略提示、CHANGELOG/升级指引。
@@ -166,6 +172,29 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - 复用 `_is_group_admin_or_owner` 做权限校验
 - 复用 `pending_join_requests` 字段和 `_handle_group_request` 封装
 
+### 3.13 审查工具失败处理与增量审查风险
+**审查失败场景处理**：
+- 工具输出验证失败时，应自动降级为"manual review required"
+- 禁止产生无评分的审查决策（评分 None 应触发告警）
+- `quick` 策略不应用于需要评估业务影响的变更
+
+**增量审查特殊风险（#148 教训）**：
+- 合并提交前需确认被合并 PR 是否已审查
+- `quick` 策略安全边界：配置项 ≥5 或代码变更 ≥200 行应升级策略
+- 涉及配置项新增时，必须验证 JSON schema 与代码注释一致性
+
+**配置项变更审查清单**：
+- 新配置项默认值是否安全？（false 优于 true）
+- 枚举值是否有边界校验？
+- 数值范围是否在 schema 中限定（1-50）？
+- 配置项文档是否与代码注释一致？
+
+### 3.14 Issue 原标题标记解析
+原标题标记（如 `[bug]`/`[enhancement]`/`[high]` 等）是分类/优先级的重要信号，**分析时必须读取并响应**：
+- 原标题标注 `[bug]` → 分类应为 `bug`，禁止降级为 `other`
+- 原标题标注 `[high]` → 优先级至少 medium，高优先级需明确理由
+- 持久化类 Issue 需检查存储层（内存 dict 缺落盘逻辑是常见根因）
+
 ## 4. 标签与权限配置
 
 - 标签建议覆盖主类型/模块/风险；高频模块：`recall`/`message-history`/`command`/`parser`/`onebot`/`group-management`/`moderation`/`stt`/`voice`/`title`/`permission-model`/`onebot-extension`。
@@ -184,6 +213,8 @@ OneBot v11 未定义 `set_group_todo`（非标准扩展）；群主专属权限�
 - **⚠️ 权限变更审查必检项**：替代方案完备性 + 旧配置迁移 + 破坏性说明 + 文档同步 + `_GM_COMMAND_NAMES` 同步 + CHANGELOG
 - **⚠️ 硬编码替代可配置项**：必须显式评估 breaking-change 并在 CHANGELOG 标注
 - **⚠️ `parser` 标签滥用风险**：静态命令匹配不涉及参数解析，`parser` 标签置信度应 ≤0.3。
+- **⚠️ 审查工具失败处理**：验证失败时应拒绝提交标记"审查失败"，禁止产生无评分输出
+- **⚠️ Issue 标题标记必响应**：原标题的 `[bug]`/`[high]` 等标记是分类/优先级信号，分析时必须读取并体现在结论中
 - 验证清单：`python -m py_compile main.py` ≥ `ast.parse`；本地缓存回退类应附最小单元测试；README/帮助/schema/CHANGELOG 必须在同一 PR 同步；提交信息避免批量重复 `chore` commit（参 §2.7/2.8）；行号引用必须标注"已读取 main.py 验证"或"约 Lxxxx"模糊表述。
 - 新增跨私聊/群聊工作流时，先设计状态机/申请 ID/权限边界/持久化/过期/并发幂等/隐私。
 - `ast.parse` ≠ 真实加载：装饰器注册、命令注册等不会在 ast 阶段触发，**PR 验证应替换为最小 AstrBot 启动验证**。
