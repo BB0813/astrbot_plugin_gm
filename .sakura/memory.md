@@ -1,10 +1,10 @@
 # 项目记忆
 
-累计反思 98 次
+累计反思 97 次
 
 ## 仓库背景
 
-`mjy1113451/astrbot_plugin_gm` 是 AstrBot 群管理插件。**高频模式**：权限模型重构（#130/#132/#139/#140）、引用消息触发型命令（#131 群待办）、撤回/STT/头衔/加群申请、装饰字符 QQ 解析（#134/#136）、解禁（#133）、禁言列表查询（#135 读类）、命令别名/重命名（#138）、**举报/通知路由（#140）**、**动作联动型（#143 新增：踢→清历史等 A 成功后触发 B）**、**撤回增强类（#142：踢→批量撤回被踢者历史）**。出现关键词即套对应模板。
+`mjy1113451/astrbot_plugin_gm` 是 AstrBot 群管理插件。**高频模式**：权限模型重构（#130/#132/#139/#140）、引用消息触发型命令（#131 群待办）、撤回/STT/头衔/加群申请、装饰字符 QQ 解析（#134/#136）、解禁（#133）、禁言列表查询（#135 读类）、命令别名/重命名（#138）、举报/通知路由（#140）、**owner-driven 纯减法（#141：删 /取消头衔）**、**撤回增强类（#142：踢→批量撤回被踢者历史）**、**动作联动型（#143：踢→清历史等 A 成功后触发 B）**。出现关键词即套对应模板。
 
 - **"删除功能"类 Issue 不应自动归 medium**：维护者本人纯减法 → low 组合（主动减法+owner 自实施+无横切关注点）。
 - **`breaking-change` 独立标签**：删命令/改命令参数语义/改返回值/删配置项。
@@ -12,11 +12,12 @@
 - **撤回缓存三层链路**：`recent_messages` → `message_history` → `get_group_msg_history` 兜底。
 - **跨适配器读取类群成员字段差异矩阵**（#135/#136 沉淀）：`role`、`shut_up_timestamp`/`ban_expire_time`/`mute_end_time` 等差异矩阵已建立——"读群成员 X 字段"类必先列对照表。
 - **`breaking-change` 4 档精细化（#142 沉淀）**：新增配置+默认 false ≤0.30 / 新增配置+默认 true 0.55-0.65（silent behavior change）/ 修改既有默认值 0.70-0.80 / 删除既有配置或命令 0.90-0.95。
-- **跨适配器 `delete_msg` + `get_group_msg_history` 差异矩阵（#142/#143 待建）**：NapCat/Lagrange/go-cqhttp 三家 delete_msg 限速（1-5/s 差异）+ `get_group_msg_history` 最大返回条数差异。
-- **OneBot `notice` 事件跨适配器差异矩阵（#142 待建）**：`group_decrease`/`group_member_leave` 字段名差异（sub_type/event/notice_type）。
+- **跨适配器 `delete_msg` + `get_group_msg_history` 差异矩阵（#142/#143 沉淀）**：NapCat/Lagrange/go-cqhttp 三家 delete_msg 限速（1-5/s 差异）+ `get_group_msg_history` 最大返回条数差异。
+- **OneBot `notice` 事件跨适配器差异矩阵（#142 沉淀）**：`group_decrease`/`group_member_leave` 字段名差异（sub_type/event/notice_type）。
 - **撤回 ≠ 清除（#142 沉淀）**：撤回对其他群员仍可见"XXX 撤回了一条消息"通知，并非真正清除，分析必须明示该区分。
 - **缓存骨架集成度必须查证（#142 沉淀）**：PR #123 `message_history` 的 merge 状态、容量、跨群隔离语义必须查证而非假设。
 - **新增标签首次使用置信度上限（#142 沉淀）**：生僻标签首次使用 ≤0.75，避免误导检索。
+- **owner-driven 纯减法 vs 对外契约删减边界（#141 沉淀）**：纯内部清理才适用 `low`；对外可见命令删除应保留 `medium`。
 
 ## 命令集重构 / 双向复合改动模板（#139 案例）
 
@@ -56,6 +57,16 @@
 - **可观测性回执**：成功 N/M、跳过 X 条因时间窗、失败 Y 条因限流 的分类回执。
 - **红旗**："清历史/清记录"涉及 GDPR/个人信息删除合规风险（主流平台 Bot API 通常不允许运营方清空他人消息），必须显式评估滥用/合规/不可逆性。
 - **标题范式**：`[enhancement][medium] 踢人事件自动清除/撤回被踢用户本群历史（按群覆盖配置 + 独立指令）`。
+
+## owner-driven 纯减法类模板（#141 新增，仓库第 6 种）
+
+- **触发**：维护者本人发起删除既有命令/功能/配置项。
+- **与 #138（重命名）/ #139（双向复合）差异**：保留能力 vs 完全删除 vs 删+增复合。
+- **必查项**：①七处同步（main.py + `_GM_COMMAND_NAMES` + README + 帮助 + CHANGELOG + metadata.yaml + 公告）对纯减法也强制 ②grep 全仓库残留（`grep -rn "_clear_group_title"`）③i18n/测试用例同步清理 ④用户替代路径评估 ⑤已知 bug 与删除动机耦合 ⑥AstrBot 装饰器注册残留检测。
+- **必给标签**：`enhancement`(0.95) + `breaking-change`(0.90) + `command-removal`/`cleanup`(新建) + `command`(0.95) + `documentation`(0.85) + `needs-discussion`(0.80-0.85) + `onebot`(≥0.55, #140 硬约束) + `needs-info`(≤0.30) + `migration`(若分支 B/C)。
+- **优先级**：默认 `low`（owner-driven + 主动减法 + 无横切），例外（对外契约删减 + 教程/脚本引用）才显式说明维持 `medium`。
+- **可行性分支 A/B/C/D**：A 纯删除 5-15 行/0.25-0.5 天 / B 删+替代入口 60-100 行/1-2 天 / C 删+README 提示 25-55 行/0.5 天 / **D 分阶段（先废弃警告一版本周期→再删）30-50 行/0.5-1 天**。
+- **`deprecation` vs 直接删除**：仅"标记废弃但保留过渡期"才适用 `deprecation`；直接删除应给 `command-removal`/`cleanup` 而非 `deprecation`。
 
 ## 撤回增强类 Issue 模板（#142 沉淀，#122/#124/#126 族系延伸）
 
