@@ -174,7 +174,6 @@ pip install astrbot_plugin_group_admin
 ## 命令使用示例
 
 ```
-
 # 禁言某成员 30 分钟
 /禁言 @小明 30
 
