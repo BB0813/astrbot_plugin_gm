@@ -117,6 +117,7 @@ class GroupAdminPlugin(Star):
             # 加群申请群内提醒（#57）
             "join_request_notify_in_group": False,
             "pending_join_requests": {},
+            "join_reject_reason": "不满足加群条件",
             # #74 配置按群独立（保留全局默认值）
             "group_overrides": {},
             # ====== 群违规检测（合并自 astrbot_plugin_group_moderation） ======
@@ -638,10 +639,11 @@ class GroupAdminPlugin(Star):
         "添加插件管理", "删除插件管理", "添加头衔管理", "删除头衔管理",
         "添加管理管理", "删除管理管理", "添加踢人管理", "删除踢人管理",
         "设置群配置", "查看群配置", "清除群配置", "群违规检测状态",
-"设管理", "取消管理", "头衔", "取消头衔",
-        "别人昵称", "改群昵称", "群昵称", "禁言", "解禁", "踢", "清用户历史", "鞭尸",
+        "设管理", "取消管理", "头衔",
+        "别人昵称", "改群昵称", "群昵称", "禁言", "禁言列表", "解禁", "踢", "清用户历史", "鞭尸",
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
-        "发群公告", "删群公告", "排名", "清除数据", "举报", "status",
+        "发群公告", "排名", "清除数据", "举报", "status",
+        "添加群待办", "取消群待办", "给我头衔", "加群申请待处理", "群信息",
     )
 
     def _is_plugin_command(self, text: str) -> bool:
@@ -943,6 +945,18 @@ class GroupAdminPlugin(Star):
             except Exception as e:
                 logger.error(f"发送私聊失败: {e}")
         return False
+
+    async def _find_group_owner(self, event: AstrMessageEvent, group_id: str) -> str:
+        """查找群主 QQ 号，用于 #140 举报分级路由。返回 QQ 号字符串，找不到返回空串。"""
+        member_list = await self._execute_action(event, "get_group_member_list",
+                                                 group_id=group_id, return_raw=True)
+        if isinstance(member_list, dict):
+            data = member_list.get("data") or member_list
+            if isinstance(data, list):
+                for m in data:
+                    if isinstance(m, dict) and m.get("role") == "owner":
+                        return str(m.get("user_id", ""))
+        return ""
 
     async def _send_group_text(self, event: AstrMessageEvent, group_id: str, text: str):
         """向指定群发送纯文本消息，返回 message_id（用于后续引用回复关联）。"""
@@ -1938,29 +1952,6 @@ class GroupAdminPlugin(Star):
         ok = await self._set_group_title(event, group_id, target_qq, title)
         yield event.plain_result("设置头衔成功" if ok else "设置头衔失败")
 
-    @filter.command("取消头衔", "取消群头衔")
-    async def unset_group_title_cmd(self, event: AstrMessageEvent, target: str = ""):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        sender_id = str(raw.get("user_id"))
-        group_id = str(raw.get("group_id"))
-        target_qq = self._extract_at_qq(raw) or self._parse_qq(target) or sender_id
-        self_cancel = target_qq == sender_id and self._sender_has_special_title(raw)
-        if not self.has_title_admin_rights(sender_id, group_id, raw) and not self_cancel:
-            yield event.plain_result("只有插件管理员、头衔管理员、群管理员或有头衔者本人可执行此操作")
-            return
-        ok = await self._clear_group_title(event, group_id, target_qq)
-        if ok:
-            yield event.plain_result("取消头衔成功")
-        else:
-            yield event.plain_result(
-                f"取消头衔失败：群 {group_id} 用户 {target_qq} 头衔清除后仍被读到。\n"
-                "可能原因：Bot 权限不足 / 头衔由群主设置且不可由 Bot 修改。\n"
-                "请确认 Bot 仍为群管理员并拥有设置头衔的权限。"
-            )
-
     # #18: 别人昵称 - 设置他人的群昵称
     @filter.command("别人昵称", "设置他人群昵称（需要 @某人 + 新昵称）")
     async def set_other_card_cmd(self, event: AstrMessageEvent):
@@ -2016,7 +2007,12 @@ class GroupAdminPlugin(Star):
         if not self._is_authorized(raw, sender_id):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        qq = self._extract_at_qq(raw) or self._parse_qq(target)
+        qq = self._extract_at_qq(raw)
+        if not qq and target:
+            # #136：仅在 target 为纯数字 QQ 号时 fallback，避免装饰字符误识别
+            clean = re.sub(r"[^\d]", "", target)
+            if clean and 5 <= len(clean) <= 12:
+                qq = clean
         if not qq:
             yield event.plain_result("请指定要禁言的QQ号")
             return
@@ -2043,9 +2039,13 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
         group_id = str(raw.get("group_id"))
-        qq = self._extract_at_qq(raw) or self._parse_qq(target)
+        qq = self._extract_at_qq(raw)
+        if not qq and target:
+            # #136：仅在 target 为纯数字 QQ 号时 fallback，避免装饰字符 @用户名 误识别
+            clean = re.sub(r"[^\d]", "", target)
+            if clean and 5 <= len(clean) <= 12:
+                qq = clean
         if not qq:
-            yield event.plain_result("请指定要解禁的QQ号")
             return
         ok = await self._unmute_member(event, group_id, qq)
         if self._should_notify_mute(ok):
@@ -2420,27 +2420,6 @@ class GroupAdminPlugin(Star):
             await self._send(event, [Plain(f"[群公告] {content}")])
             yield event.plain_result("当前框架不支持发群公告，已以普通消息发送")
 
-    @filter.command("删群公告", "删除群公告")
-    async def delete_group_notice_cmd(self, event: AstrMessageEvent, notice_id: str = ""):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        sender_id = str(raw.get("user_id"))
-        group_id = str(raw.get("group_id"))
-        if not self._is_authorized(raw, sender_id):
-            yield event.plain_result("只有群管理员或插件管理员可执行此操作")
-            return
-        if not notice_id:
-            yield event.plain_result("请提供要删除的公告ID，例如 /删群公告 12345")
-            return
-        ok = await self._execute_action(event, "_delete_group_notice",
-                                        group_id=group_id, notice_id=notice_id)
-        if not ok:
-            ok = await self._execute_action(event, "delete_group_notice",
-                                            group_id=group_id, notice_id=notice_id)
-        yield event.plain_result("群公告已删除" if ok else "删除群公告失败")
-
     # #29: 鞭尸禁言 + 发言排名
     @filter.command("鞭尸", "长期禁言被@的人（29天23小时59分）")
     async def whip_corpse_cmd(self, event: AstrMessageEvent):
@@ -2506,6 +2485,11 @@ class GroupAdminPlugin(Star):
         if not target_qq:
             yield event.plain_result("请 @要举报的成员")
             return
+        # #140: 群主豁免 — 群主不触发举报
+        reporter_role = raw.get("sender", {}).get("role", "")
+        if reporter_role == "owner":
+            yield event.plain_result("群主无需举报")
+            return
         reply_id = self._get_reply_id(event)
         record = {
             "group_id": group_id,
@@ -2517,16 +2501,203 @@ class GroupAdminPlugin(Star):
         }
         self.reports.setdefault("pending", []).append(record)
         self.save_reports()
-        # 通知管理员
-        notify_admins = self.config.get("report_notify_admins", [])
-        if notify_admins:
-            text = (f"[举报] 群 {group_id}\n"
-                    f"举报人: {reporter_id}\n"
-                    f"被举报: {target_qq}\n"
-                    f"原因: {record['reason']}")
-            for admin_id in notify_admins:
-                await self._send_private_msg(str(admin_id), text)
+        # #140: 按角色分级路由通知
+        # 查被举报人角色
+        target_role = ""
+        info = await self._execute_action(event, "get_group_member_info",
+                                          group_id=group_id, user_id=target_qq,
+                                          return_raw=True, no_cache=True)
+        if isinstance(info, dict):
+            data = info.get("data") or info
+            target_role = data.get("role", "")
+        report_text = (f"[举报] 群 {group_id}\n"
+                       f"举报人: {reporter_id}\n"
+                       f"被举报: {target_qq}\n"
+                       f"原因: {record['reason']}")
+        # 被举报人是管理员 → 仅通知群主；普通成员 → 通知所有管理员 + 群主
+        if target_role in ("admin", "owner"):
+            # 仅通知群主
+            owner_qq = await self._find_group_owner(event, group_id)
+            if owner_qq:
+                await self._send_private_msg(str(owner_qq), report_text)
+        else:
+            # 通知所有管理员 + 群主
+            await self._notify_admins(report_text, group_id=group_id)
         yield event.plain_result("已提交举报，管理员会尽快处理")
+
+    # ===================== 新增命令（#131 #135 #139 #146 #150 #151）=====================
+
+    # #135: /禁言列表 — 查看本群当前被禁言成员
+    @filter.command("禁言列表", "查看本群当前被禁言成员列表")
+    async def mute_list_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有插件管理员或群管理员可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        member_list = await self._execute_action(event, "get_group_member_list",
+                                                  group_id=group_id, return_raw=True)
+        muted = []
+        if isinstance(member_list, dict):
+            data = member_list.get("data") or member_list
+            if isinstance(data, list):
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
+                    mute_left = m.get("mute_left", 0)
+                    if isinstance(mute_left, (int, float)) and mute_left > 0:
+                        uid = str(m.get("user_id", ""))
+                        nick = m.get("nickname", "")
+                        card = m.get("card", "") or ""
+                        name = card if card else nick
+                        minutes = max(1, int(mute_left / 60))
+                        muted.append(f"{uid}（{name}）剩余 {minutes} 分钟")
+        if not muted:
+            yield event.plain_result("本群当前无被禁言成员")
+            return
+        text = f"本群禁言列表（{len(muted)} 人）：\n" + "\n".join(muted)
+        yield event.plain_result(text)
+
+    # #146: /给我头衔 — 普通成员自设群头衔
+    @filter.command("给我头衔", "自设群头衔（/给我头衔 标题内容）")
+    async def self_title_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        group_id = str(raw.get("group_id"))
+        title = self._extract_text(raw).strip()
+        for prefix in ("/给我头衔", "给我头衔"):
+            if title.startswith(prefix):
+                title = title[len(prefix):].lstrip()
+                break
+        import re as _re
+        title = _re.sub(r"^@[\w（）()\d]+\s*", "", title)
+        if not title:
+            yield event.plain_result("请提供群头衔内容，例如 /给我头衔 传说")
+            return
+        if len(title) > 60:
+            yield event.plain_result("头衔内容过长（最多60字符）")
+            return
+        ok = await self._set_group_title(event, group_id, sender_id, title)
+        yield event.plain_result("设置头衔成功" if ok else "设置头衔失败（Bot可能无权限或头衔功能不可用）")
+
+    # #131: /添加群待办 — 引用消息设为群待办（群管/群主）
+    @filter.command("添加群待办", "引用消息设为群待办")
+    async def add_group_todo_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            yield event.plain_result("请引用一条消息后发送此命令")
+            return
+        ok = await self._execute_action(event, "_set_group_todo",
+                                        group_id=group_id, message_id=int(reply_id))
+        if ok is None:
+            ok = await self._execute_action(event, "set_group_todo",
+                                            group_id=group_id, message_id=int(reply_id))
+        yield event.plain_result("已设为群待办" if ok else "设置群待办失败（当前 OneBot 实现可能不支持此 API）")
+
+    # #139: /取消群待办 — 引用消息取消群待办（群管/群主）
+    @filter.command("取消群待办", "引用消息取消群待办")
+    async def delete_group_todo_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            yield event.plain_result("请引用一条群待办消息后发送此命令")
+            return
+        ok = await self._execute_action(event, "_delete_group_todo",
+                                        group_id=group_id, message_id=int(reply_id))
+        if ok is None:
+            ok = await self._execute_action(event, "delete_group_todo",
+                                            group_id=group_id, message_id=int(reply_id))
+        yield event.plain_result("已取消群待办" if ok else "取消群待办失败（当前 OneBot 实现可能不支持此 API）")
+
+    # #150: /加群申请待处理 — 查看待处理加群申请（群管/群主）
+    @filter.command("加群申请待处理", "查看本群未处理的加群申请列表")
+    async def pending_join_requests_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        result = await self._execute_action(event, "get_group_apply_list",
+                                            group_id=group_id, return_raw=True)
+        if not result:
+            yield event.plain_result("获取加群申请列表失败（当前 OneBot 实现可能不支持此 API）")
+            return
+        applies = []
+        if isinstance(result, dict):
+            data = result.get("data") or result
+            if isinstance(data, list):
+                for a in data:
+                    if not isinstance(a, dict):
+                        continue
+                    # 只显示未处理的
+                    sub_type = a.get("sub_type", "")
+                    if sub_type not in ("add", ""):
+                        continue
+                    uid = str(a.get("user_id", ""))
+                    nick = a.get("nickname", "")
+                    comment = a.get("comment", "")
+                    ts = a.get("time", 0)
+                    time_str = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "未知"
+                    applies.append(f"{uid}（{nick}）| {time_str}\n验证消息: {comment or '无'}")
+        if not applies:
+            yield event.plain_result("本群当前无待处理的加群申请")
+            return
+        text = f"待处理加群申请（{len(applies)} 条）：\n\n" + "\n\n".join(applies)
+        yield event.plain_result(text)
+
+    # #151: /群信息 — 查看本群资料（任何成员可用）
+    @filter.command("群信息", "查看本群资料（名称/号/标签/人数）")
+    async def group_info_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        group_id = str(raw.get("group_id"))
+        result = await self._execute_action(event, "get_group_info",
+                                            group_id=group_id, return_raw=True)
+        if not result:
+            yield event.plain_result("获取群信息失败")
+            return
+        info = {}
+        if isinstance(result, dict):
+            data = result.get("data") or result
+            if isinstance(data, dict):
+                info = data
+        name = info.get("group_name") or info.get("name") or "未知"
+        gid = info.get("group_id") or group_id
+        member_count = info.get("member_count") or info.get("member_count") or "?"
+        tags = info.get("tags") or info.get("group_tags") or []
+        tags_str = ", ".join(str(t) for t in tags) if tags else "无"
+        text = f"群名称: {name}\n群号: {gid}\n群标签: {tags_str}\n成员数: {member_count}"
+        yield event.plain_result(text)
 
     # ===================== 状态查看 =====================
 
@@ -2665,7 +2836,14 @@ class GroupAdminPlugin(Star):
                     approve = "同意" in msg_text
                     deny = "拒绝" in msg_text
                     if approve or deny:
-                        await self._handle_group_request(event, info["flag"], approve, "管理员审核")
+                        # #129: 拒绝时支持自定义理由（从 "拒绝 理由" 中提取）
+                        reject_reason = "管理员审核"
+                        if deny:
+                            parts = msg_text.split("拒绝", 1)
+                            custom = parts[1].strip() if len(parts) > 1 else ""
+                            reject_reason = custom if custom else self.get_group_setting(
+                                group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
+                        await self._handle_group_request(event, info["flag"], approve, reject_reason)
                         result = "同意" if approve else "拒绝"
                         # 清理已处理的记录
                         del pending[str(reply_id)]
@@ -2712,9 +2890,10 @@ class GroupAdminPlugin(Star):
             join_approve_keywords = self.get_group_setting(group_id, "join_approve_keywords", [])
             enabled = enabled_groups and group_id in [str(x) for x in enabled_groups]
 
-            # 命中违禁词：拒绝 + 通知管理员
+            # 命中违禁词：拒绝 + 通知管理员（#129 使用自定义拒绝理由）
+            reject_reason = self.get_group_setting(group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
             if enabled and violation_keywords and any(kw in comment for kw in violation_keywords):
-                await self._handle_group_request(event, flag, False, "触发违禁词")
+                await self._handle_group_request(event, flag, False, reject_reason)
                 yield event.plain_result(f"已拒绝 {user_id} 的加群申请（含违禁词）")
                 await self._notify_admins(
                     f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"

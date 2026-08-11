@@ -84,6 +84,12 @@
         "hint": "推荐按群覆盖：/设置群配置 join_request_notify_in_group true/false。",
         "default": false
     },
+    "join_reject_reason": {
+        "description": "加群申请自动拒绝时的默认理由",
+        "type": "string",
+        "hint": "命中违禁词自动拒绝或管理员引用回复拒绝（未填写理由）时展示的理由。管理员可通过「拒绝 理由」自定义。",
+        "default": "不满足加群条件"
+    },
     "group_overrides": {
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
