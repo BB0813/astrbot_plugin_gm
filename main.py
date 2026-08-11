@@ -56,6 +56,7 @@ class GroupAdminPlugin(Star):
         self.config = self.load_config()
         self.stats = self.load_json(self.stats_path, {"groups": {}})
         self.reports = self.load_json(self.reports_path, {"pending": []})
+        self._msg_save_counter = 0  # #152：发言计数批量持久化计数器
 
         # 群违规检测运行时状态（#109 PR #1 合并自参考插件）
         # spam_records[(group_id, user_id)] -> [timestamp, ...]
@@ -1000,6 +1001,11 @@ class GroupAdminPlugin(Star):
         g = groups.setdefault(str(group_id), {"messages": {}})
         msgs = g.setdefault("messages", {})
         msgs[str(user_id)] = msgs.get(str(user_id), 0) + 1
+        # #152：每50条消息批量写入磁盘，避免重启丢数据
+        self._msg_save_counter += 1
+        if self._msg_save_counter >= 50:
+            self._msg_save_counter = 0
+            self.save_stats()
 
     def get_rank(self, group_id: str, top_n: int) -> list:
         groups = self.stats.get("groups", {})
