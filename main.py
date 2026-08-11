@@ -1004,8 +1004,8 @@ class GroupAdminPlugin(Star):
         # #152：每50条消息批量写入磁盘，避免重启丢数据
         self._msg_save_counter += 1
         if self._msg_save_counter >= 50:
-            self._msg_save_counter = 0
             self.save_stats()
+            self._msg_save_counter = 0
 
     def get_rank(self, group_id: str, top_n: int) -> list:
         groups = self.stats.get("groups", {})
