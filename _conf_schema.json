@@ -88,7 +88,7 @@
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
         "items": {},
-        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation、max_message_history、kick_recall_enabled、kick_recall_count、voice_check_enabled、voice_check_provider_id、voice_asr_endpoint、voice_asr_api_key、voice_asr_model、voice_check_timeout。也可在群内用 /设置群配置 key value 动态设置。",
+        "hint": "按群覆盖配置。可用 key 包括：show_recall_notice、auto_recall_keywords、auto_recall_enabled_groups、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、group_promotion_*、ban_duration、whitelist_users、admin_bypass、notify_on_violation、max_message_history、kick_recall_enabled、kick_recall_count、voice_check_enabled。语音转文字相关配置（voice_check_provider_id、voice_asr_endpoint/api_key/model、voice_check_timeout）为全局配置，不支持按群覆盖。也可在群内用 /设置群配置 key value 动态设置。",
         "default": {}
     },
     "api_type": {
