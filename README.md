@@ -97,12 +97,12 @@ pip install astrbot_plugin_group_admin
 | `max_message_history` | int | `50` | 每群内存缓存的撤回消息历史条数（用于 /撤回 N 与 /撤回自身 N） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
-| `voice_check_enabled` | bool | `false` | 启用语音消息转文字违规检测（#128） |
-| `voice_check_provider_id` | string | `""` | AstrBot 内置 STT provider ID（#128，可选，留空用当前激活 provider） |
-| `voice_asr_endpoint` | string | `""` | 独立 ASR API 端点（#128，可选兜底） |
-| `voice_asr_api_key` | string | `""` | 独立 ASR API Key（#128，可选兜底） |
-| `voice_asr_model` | string | `""` | 独立 ASR 模型名（#128，默认 whisper-1） |
-| `voice_check_timeout` | int | `15` | ASR 识别超时秒数（#128） |
+| `voice_check_enabled` | bool | `false` | 启用语音消息转文字违规检测（#128；可按群覆盖） |
+| `voice_check_provider_id` | string | `""` | AstrBot 内置 STT provider ID（#128；留空用当前激活 provider；**全局配置**） |
+| `voice_asr_endpoint` | string | `""` | 独立 ASR API 端点（#128；可选兜底；**全局配置**） |
+| `voice_asr_api_key` | string | `""` | 独立 ASR API Key（#128；可选兜底；**全局配置**） |
+| `voice_asr_model` | string | `""` | 独立 ASR 模型名（#128；默认 whisper-1；**全局配置**） |
+| `voice_check_timeout` | int | `15` | ASR 识别超时秒数（#128；**全局配置**） |
 
 ### 配置示例
 
@@ -139,7 +139,8 @@ pip install astrbot_plugin_group_admin
 }
 ```
 
-按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测（`voice_check_enabled`、`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）。
+按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
+> 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
 ---
 
 ## `/撤回` 用法与兼容性
@@ -173,7 +174,8 @@ pip install astrbot_plugin_group_admin
 
 **语音转文字违规检测（#128）**：
 
-- 配置 `voice_check_enabled=true` 后，对群内语音消息自动 ASR 识别，复用违规检测链路（骂人 / 广告 / 链接 / 群号推广）。
+- 配置 `voice_check_enabled=true` 后，对群内语音消息自动 ASR 识别，复用违规检测链路（骂人 / 广告 / 链接 / 群号推广）。`voice_check_enabled` 可按群覆盖，便于各群独立启用。
+- ASR 模型相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖，整个 Bot 共享同一套 ASR 路由。
 - ASR 识别顺序：① `voice_check_provider_id` 指定的 AstrBot 内置 STT provider；② 未指定时使用 AstrBot 当前激活的 STT provider；③ AstrBot 不可用时回退到 `voice_asr_endpoint` + `voice_asr_api_key` + `voice_asr_model` 配置的 OpenAI 兼容 `/audio/transcriptions` 接口。
 - 命中违规则撤回语音消息并按对应时长禁言。
 

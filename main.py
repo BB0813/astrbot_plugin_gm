@@ -686,8 +686,8 @@ class GroupAdminPlugin(Star):
         返回识别文本，失败返回空串。"""
         if not audio_url:
             return ""
-        timeout = max(5, int(self.get_group_setting(group_id, "voice_check_timeout", 15) or 15))
-        provider_id = str(self.get_group_setting(group_id, "voice_check_provider_id", "") or "").strip()
+        timeout = max(5, int(self.config.get("voice_check_timeout", 15) or 15))
+        provider_id = str(self.config.get("voice_check_provider_id", "") or "").strip()
         # 1) AstrBot 内置 provider：优先用户指定 provider_id，否则用当前激活的 STT provider
         try:
             ctx = getattr(self, "context", None)
@@ -717,9 +717,9 @@ class GroupAdminPlugin(Star):
         except Exception as exc:
             logger.warning(f"AstrBot STT 调用异常: {exc}")
         # 2) 插件独立 ASR API（OpenAI 兼容 /audio/transcriptions）
-        endpoint = str(self.get_group_setting(group_id, "voice_asr_endpoint", "") or "").strip()
-        api_key = str(self.get_group_setting(group_id, "voice_asr_api_key", "") or "").strip()
-        model = str(self.get_group_setting(group_id, "voice_asr_model", "") or "").strip() or "whisper-1"
+        endpoint = str(self.config.get("voice_asr_endpoint", "") or "").strip()
+        api_key = str(self.config.get("voice_asr_api_key", "") or "").strip()
+        model = str(self.config.get("voice_asr_model", "") or "").strip() or "whisper-1"
         if not endpoint:
             return ""
         try:
