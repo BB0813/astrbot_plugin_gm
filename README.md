@@ -5,6 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
+#注∶在插件配置设置完会设置为默认信息，即为全局配置
 
 ## 功能一览
 
