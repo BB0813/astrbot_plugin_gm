@@ -273,6 +273,13 @@
         "hint": "推荐按群覆盖。",
         "default": []
     },
+    "banned_images": {
+        "description": "违禁图片 MD5 列表（按 MD5 比对）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "推荐按群覆盖。命中后撤回并按 ban_duration 禁言。在群内引用图片回复 /添加违禁图片 即可添加。",
+        "default": []
+    },
     "admin_bypass": {
         "description": "管理员豁免检测",
         "type": "bool",
