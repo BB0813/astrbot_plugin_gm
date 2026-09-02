@@ -2721,10 +2721,8 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("请引用一条图片消息后发送此命令")
             return
         text = self._extract_text(raw).strip()
-        for prefix in ("/群相册", "群相册"):
-            if text.startswith(prefix):
-                text = text[len(prefix):].lstrip()
-                break
+        # 用正则统一处理前缀，避免边界输入裁错
+        text = re.sub(r"^[/]?群相册\s*", "", text)
         if not text:
             yield event.plain_result("请提供相册名，例如 /群相册 表情包")
             return
@@ -2749,15 +2747,26 @@ class GroupAdminPlugin(Star):
         if not image_url:
             yield event.plain_result("引用消息中未找到图片")
             return
-        # 1) 尝试创建相册目录
+        # 1) 尝试创建相册目录；失败时尝试 get_group_file_list 找已有目录
+        folder_id = ""
         folder_result = await self._execute_action(event, "create_group_file_folder",
                                                     group_id=int(raw["group_id"]),
                                                     folder_name=text, return_raw=True)
-        folder_id = ""
         if isinstance(folder_result, dict):
             data = folder_result.get("data") or folder_result
             if isinstance(data, dict):
                 folder_id = str(data.get("folder_id") or data.get("id") or "")
+        if not folder_id:
+            # 目录已存在时：列出根目录，匹配同名
+            list_result = await self._execute_action(event, "get_group_file_list",
+                                                     group_id=int(raw["group_id"]),
+                                                     folder_id="", return_raw=True)
+            if isinstance(list_result, dict):
+                items = (list_result.get("data") or list_result).get("folders") or []
+                for item in items:
+                    if isinstance(item, dict) and str(item.get("folder_name", "")) == text:
+                        folder_id = str(item.get("folder_id", ""))
+                        break
         # 2) 上传文件到群文件
         # 截取 URL 文件名做默认显示名
         file_name = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.jpg"
