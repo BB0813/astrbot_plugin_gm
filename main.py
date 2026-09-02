@@ -13,7 +13,7 @@ except ImportError:
 
 import json
 import os
-import re
+import re  # 用于群相册命令前缀解析、编号提取等
 import time
 import asyncio
 import base64
