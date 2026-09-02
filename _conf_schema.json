@@ -90,6 +90,12 @@
         "hint": "命中违禁词自动拒绝或管理员引用回复拒绝（未填写理由）时展示的理由。管理员可通过「拒绝 理由」自定义。",
         "default": "不满足加群条件"
     },
+    "join_audit_enabled": {
+        "description": "加群申请自动审核总开关",
+        "type": "bool",
+        "hint": "关闭后所有自动审核（违禁词拒绝/关键词同意）都不生效。管理员手动审核（引用回复同意/拒绝）不受影响。推荐按群覆盖：/设置群配置 join_audit_enabled true/false。",
+        "default": true
+    },
     "group_overrides": {
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",
