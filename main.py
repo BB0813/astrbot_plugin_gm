@@ -2151,11 +2151,10 @@ class GroupAdminPlugin(Star):
         # 1) 引用消息优先（保持原有语义）
         if reply_id:
             ok = await self._recall_message(event, reply_id)
-            show_notice = self.get_group_setting(group_id, "show_recall_notice", True)
-            if show_notice:
-                if ok:
-                    await self._send(event, self._build_text("已撤回该消息"))
-                yield event.plain_result("撤回成功" if ok else "撤回失败")
+            # show_recall_notice 只控制群内公告；plain_result 永远返回命令结果
+            if ok and self.get_group_setting(group_id, "show_recall_notice", True):
+                await self._send(event, self._build_text("已撤回该消息"))
+            yield event.plain_result("撤回成功" if ok else "撤回失败")
             return
 
         # 2) @用户 + N：撤回该用户最近 N 条（#110 #117）
@@ -2182,13 +2181,11 @@ class GroupAdminPlugin(Star):
                 elif "已撤回" in err:
                     self._remove_message_from_history(group_id, m[0])
             if recalled:
-                show_notice = self.get_group_setting(group_id, "show_recall_notice", True)
-                if show_notice:
-                    await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息"))
-                    yield event.plain_result(f"撤回成功（{recalled} 条）")
-            else:
                 if self.get_group_setting(group_id, "show_recall_notice", True):
-                    yield event.plain_result("撤回失败，未找到该用户的可撤回消息")
+                    await self._send(event, self._build_text(f"已撤回用户 {target_qq} 的 {recalled} 条消息"))
+                yield event.plain_result(f"撤回成功（{recalled} 条）")
+            else:
+                yield event.plain_result("撤回失败，未找到该用户的可撤回消息")
             return
 
         # 3) 仅数量：撤回最近 N 条（#109，不撤回指令本身；#118 本地历史兜底）
@@ -2220,13 +2217,11 @@ class GroupAdminPlugin(Star):
                 elif "已撤回" in err:
                     self._remove_message_from_history(group_id, m[0])
             if recalled:
-                show_notice = self.get_group_setting(group_id, "show_recall_notice", True)
-                if show_notice:
-                    await self._send(event, self._build_text(f"已撤回 {recalled} 条消息"))
-                    yield event.plain_result(f"撤回成功（{recalled} 条）")
-            else:
                 if self.get_group_setting(group_id, "show_recall_notice", True):
-                    yield event.plain_result("撤回失败，未找到可撤回消息")
+                    await self._send(event, self._build_text(f"已撤回 {recalled} 条消息"))
+                yield event.plain_result(f"撤回成功（{recalled} 条）")
+            else:
+                yield event.plain_result("撤回失败，未找到可撤回消息")
             return
 
         # 4) 用法提示
