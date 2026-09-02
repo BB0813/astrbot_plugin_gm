@@ -2762,7 +2762,19 @@ class GroupAdminPlugin(Star):
                                                      group_id=int(raw["group_id"]),
                                                      folder_id="", return_raw=True)
             if isinstance(list_result, dict):
-                items = (list_result.get("data") or list_result).get("folders") or []
+                list_data = list_result.get("data") or list_result
+                # 宽松兜底：尝试多种 OneBot 实现的文件夹列表字段
+                items = (
+                    list_data.get("folders")
+                    or list_data.get("file_list")
+                    or list_data.get("items")
+                    or []
+                )
+                if not isinstance(items, list):
+                    logger.warning(
+                        f"gm: get_group_file_list 返回结构异常: {list_data}"
+                    )
+                    items = []
                 for item in items:
                     if isinstance(item, dict) and str(item.get("folder_name", "")) == text:
                         folder_id = str(item.get("folder_id", ""))
