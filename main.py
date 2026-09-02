@@ -1360,26 +1360,33 @@ class GroupAdminPlugin(Star):
             logger.error(f"[群违规检测] Moderation API 调用失败: {e}")
             return False, ""
 
-    async def _download_image(self, url: str):
+    async def _download_image(self, url: str, max_size: int = 10 * 1024 * 1024):
+        """下载图片。#162 增强：限制最大 10MB，避免慢速/大文件阻塞检测。"""
         if aiohttp is None:
             return None
         try:
             if url.startswith("http://") or url.startswith("https://"):
-                timeout = aiohttp.ClientTimeout(total=30)
+                timeout = aiohttp.ClientTimeout(total=15)
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=timeout) as resp:
-                        if resp.status == 200:
-                            return await resp.read()
+                        if resp.status != 200:
+                            return None
+                        # Content-Type 必须为图片
+                        ct = resp.headers.get("Content-Type", "")
+                        if ct and not ct.startswith("image/"):
+                            return None
+                        return await resp.content.read(max_size + 1)
             elif url.startswith("base64://"):
-                return base64.b64decode(url[9:])
+                data = base64.b64decode(url[9:])
+                return data[:max_size + 1] if len(data) > max_size else data
             elif url.startswith("file://"):
                 with open(url[7:], "rb") as f:
-                    return f.read()
+                    return f.read(max_size + 1)
             elif url and not url.startswith("http"):
                 # 某些实现把图片作为本地路径返回
                 try:
                     with open(url, "rb") as f:
-                        return f.read()
+                        return f.read(max_size + 1)
                 except OSError:
                     return None
         except Exception as e:
@@ -2981,8 +2988,10 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
         group_id = str(raw.get("group_id"))
-        if not md5_prefix or len(md5_prefix) < 4:
-            yield event.plain_result("请提供 MD5 前缀（至少 4 位），例如 /删除违禁图片 1a2b3c4d")
+        # #162 review: 校验 md5_prefix 为 hex 字符（仅 0-9a-f），避免与未来 sha256 等格式冲突
+        md5_prefix = (md5_prefix or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{4,32}", md5_prefix):
+            yield event.plain_result("MD5 前缀必须为 4-32 位 hex 字符（0-9a-f），例如 /删除违禁图片 1a2b3c4d")
             return
         gconf = self.config.get("group_overrides", {}).get(group_id, {})
         banned = gconf.get("banned_images", [])
