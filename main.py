@@ -2824,7 +2824,7 @@ class GroupAdminPlugin(Star):
             return
         ok = await self._execute_action(event, "set_group_name",
                                         group_id=group_id, group_name=text)
-        yield event.plain_result(f"已修改群名为「{text}」" if ok else "修改群名失败")
+        yield event.plain_result(f"已修改群名为「{text}」" if ok else "修改群名失败（当前 OneBot 实现可能不支持此 API，或机器人权限不足）")
 
     # #163: /群标签 — 添加群标签（群管/群主）
     @filter.command("群标签", "添加群标签（/群标签 标签名）")
