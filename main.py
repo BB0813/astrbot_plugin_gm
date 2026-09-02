@@ -644,7 +644,7 @@ class GroupAdminPlugin(Star):
         "别人昵称", "改群昵称", "群昵称", "禁言", "禁言列表", "解禁", "踢", "清用户历史", "鞭尸",
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
         "发群公告", "排名", "清除数据", "举报", "status",
-        "添加群待办", "取消群待办", "给我头衔", "加群申请待处理", "群信息",
+        "添加群待办", "取消群待办", "给我头衔", "加群申请待处理", "群信息", "群名称", "群标签", "群相册",
     )
 
     def _is_plugin_command(self, text: str) -> bool:
@@ -2704,6 +2704,76 @@ class GroupAdminPlugin(Star):
         tags_str = ", ".join(str(t) for t in tags) if tags else "无"
         text = f"群名称: {name}\n群号: {gid}\n群标签: {tags_str}\n成员数: {member_count}"
         yield event.plain_result(text)
+
+    # #164: /群相册 — 引用图片消息上传到群相册（群管/群主）
+    @filter.command("群相册", "引用图片上传到群相册（/群相册 相册名）")
+    async def group_album_upload_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            yield event.plain_result("请引用一条图片消息后发送此命令")
+            return
+        text = self._extract_text(raw).strip()
+        for prefix in ("/群相册", "群相册"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+        if not text:
+            yield event.plain_result("请提供相册名，例如 /群相册 表情包")
+            return
+        # 提取被引用消息的图片 URL
+        # 通过 get_msg API 拉取原消息段
+        msg = await self._execute_action(event, "get_msg",
+                                          message_id=int(reply_id), return_raw=True)
+        if not msg:
+            yield event.plain_result("无法获取引用消息内容")
+            return
+        msg_data = msg.get("data") if isinstance(msg, dict) else msg
+        image_url = ""
+        if isinstance(msg_data, dict):
+            segs = msg_data.get("message") or []
+            for seg in segs:
+                if not isinstance(seg, dict):
+                    continue
+                if seg.get("type") == "image":
+                    image_url = (seg.get("data") or {}).get("url", "") or (seg.get("data") or {}).get("file", "")
+                    if image_url:
+                        break
+        if not image_url:
+            yield event.plain_result("引用消息中未找到图片")
+            return
+        # 1) 尝试创建相册目录
+        folder_result = await self._execute_action(event, "create_group_file_folder",
+                                                    group_id=int(raw["group_id"]),
+                                                    folder_name=text, return_raw=True)
+        folder_id = ""
+        if isinstance(folder_result, dict):
+            data = folder_result.get("data") or folder_result
+            if isinstance(data, dict):
+                folder_id = str(data.get("folder_id") or data.get("id") or "")
+        # 2) 上传文件到群文件
+        # 截取 URL 文件名做默认显示名
+        file_name = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.jpg"
+        ok = await self._execute_action(event, "upload_group_file",
+                                         group_id=int(raw["group_id"]),
+                                         file=image_url, name=file_name,
+                                         folder_id=folder_id or "")
+        if not ok:
+            # 部分 OneBot 实现：folder_id 不允许空字符串
+            ok = await self._execute_action(event, "upload_group_file",
+                                             group_id=int(raw["group_id"]),
+                                             file=image_url, name=file_name)
+        yield event.plain_result(
+            f"已上传到群相册「{text}」" if ok
+            else "上传到群相册失败（当前 OneBot 实现可能不支持群相册 API）"
+        )
 
     # ===================== 状态查看 =====================
 
