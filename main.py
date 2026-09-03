@@ -119,6 +119,8 @@ class GroupAdminPlugin(Star):
             "join_request_notify_in_group": False,
             "pending_join_requests": {},
             "join_reject_reason": "不满足加群条件",
+            # #155：加群申请审核总开关（默认启用），支持按群覆盖
+            "join_audit_enabled": True,
             # #74 配置按群独立（保留全局默认值）
             "group_overrides": {},
             # ====== 群违规检测（合并自 astrbot_plugin_group_moderation） ======
@@ -2891,15 +2893,20 @@ class GroupAdminPlugin(Star):
             user_id = str(raw.get("user_id"))
             flag = raw.get("flag", "")
             comment = raw.get("comment", "")
+            # #155：审核总开关关闭后，全部自动审核逻辑都跳过
+            audit_enabled = bool(self.get_group_setting(group_id, "join_audit_enabled", True))
+            if not audit_enabled:
+                return
             enabled_groups = self.get_group_setting(group_id, "violation_enabled_groups", [])
             violation_keywords = self.get_group_setting(group_id, "violation_keywords", [])
             join_approve_keywords = self.get_group_setting(group_id, "join_approve_keywords", [])
             enabled = enabled_groups and group_id in [str(x) for x in enabled_groups]
 
-            # 命中违禁词：拒绝 + 通知管理员（#129 使用自定义拒绝理由）
+            # 命中违禁词：拒绝 + 通知管理员（#129 使用自定义拒绝理由；#159 优化提示）
             reject_reason = self.get_group_setting(group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
             if enabled and violation_keywords and any(kw in comment for kw in violation_keywords):
-                await self._handle_group_request(event, flag, False, reject_reason)
+                detail_reason = f"您的加群申请有词触碰到本群违禁词，自动拒绝（{reject_reason}）"
+                await self._handle_group_request(event, flag, False, detail_reason)
                 yield event.plain_result(f"已拒绝 {user_id} 的加群申请（含违禁词）")
                 await self._notify_admins(
                     f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
