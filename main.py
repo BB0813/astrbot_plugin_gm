@@ -2153,6 +2153,7 @@ class GroupAdminPlugin(Star):
         # 1) 引用消息优先（保持原有语义）
         if reply_id:
             ok = await self._recall_message(event, reply_id)
+            # show_recall_notice 只控制群内公告；plain_result 永远返回命令结果
             if ok and self.get_group_setting(group_id, "show_recall_notice", True):
                 await self._send(event, self._build_text("已撤回该消息"))
             yield event.plain_result("撤回成功" if ok else "撤回失败")
