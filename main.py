@@ -3088,11 +3088,15 @@ class GroupAdminPlugin(Star):
             )
 
         enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
+        keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
+        # #170：兼容只配 keywords 未配 enabled_groups 的场景，配了关键词则默认全群启用
+        if not enabled and keywords:
+            enabled = ["*"]
         if not enabled:
             return
-        if group_id not in [str(x) for x in enabled]:
-            return
-        keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
+        if "*" not in [str(x) for x in enabled] and "all" not in [str(x) for x in enabled]:
+            if group_id not in [str(x) for x in enabled]:
+                return
         if not keywords:
             return
         msg_text = self._extract_text(raw)
