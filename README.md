@@ -67,7 +67,7 @@
 
 > 检测覆盖：图片 AI 审核（色情 / 擦边）、刷屏、骂人（AI 或关键词）、广告、链接、群号推广；命中后一律：撤回 + 按对应时长禁言。
 
-**六大检测能力（对齐 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）：**
+**六大检测能力（移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）：**
 
 | 检测项 | 说明 | 默认状态 |
 |--------|------|---------|
@@ -80,7 +80,7 @@
 
 > 白名单用户（`whitelist_users`）不受检测限制；管理员默认豁免（`admin_bypass`）；检测到违规后可选择群内通知（`notify_on_violation`）。
 
-### 加群申请自动审核（对齐 [GroupManager](https://github.com/mjy1113451/group_manager)）
+### 加群申请自动审核（参考 [GroupManager](https://github.com/mjy1113451/group_manager)）
 
 加群申请验证流程（受总开关 `join_audit_enabled` 控制，关闭后仅保留管理员手动审核）：
 
@@ -187,7 +187,7 @@ pip install astrbot_plugin_group_admin
 按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
 
-### 图片 AI 审核配置（对齐 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）
+### 图片 AI 审核配置（移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）
 
 图片违规检测使用 OpenAI 兼容的视觉 API，需在插件配置中填写：
 
@@ -204,6 +204,8 @@ pip install astrbot_plugin_group_admin
 推荐视觉模型：`Qwen/Qwen2-VL-72B-Instruct`、`gpt-4o`、`deepseek-ai/deepseek-vl2`。
 
 > 性能提示：图片检测会消耗 API 调用，建议通过 `enabled_groups` 只在需要的群启用，并用 `whitelist_users` 豁免信任用户。链接检测默认关闭（`link_check_enabled`），按需开启。
+>
+> ⚠️ **凭据安全**：`api_key` 为敏感凭据，请勿提交到公开仓库或截图分享；建议通过本地配置覆盖，日志会尽量脱敏，但请避免在群聊中粘贴完整配置。
 
 ---
 
@@ -350,11 +352,12 @@ A: OneBot `delete_msg` 只能撤回约 2 分钟内的消息，超时会静默失
 
 ```
 astrbot_plugin_gm/
-├── main.py              # 插件主逻辑（3000+ 行）
+├── main.py              # 插件主逻辑（3100+ 行）
 ├── metadata.yaml         # 插件元信息
 ├── _conf_schema.json     # 配置项说明
 ├── README.md             # 本文件
-├── LICENSE               # MIT License
+├── NOTICE                # 第三方代码声明（astrbot_plugin_group_moderation 移植）
+├── LICENSE               # AGPL-3.0 License
 ├── requirements.txt      # Python 依赖（aiohttp）
 └── .github/              # GitHub 配置
 ```
@@ -377,13 +380,13 @@ astrbot_plugin_gm/
 - 🔧 修复难度低到中的 PR，会被优先合并
 - 作者的群1075920323
 
-## 致谢
+## 致谢与第三方代码说明
 
-本插件整合了以下优秀插件的功能：
+本插件整合了以下优秀插件的功能。其中**六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）的检测逻辑与 API 调用代码移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT License）**，已按其许可证要求保留来源声明；其余插件仅为功能设计参考：
 
-- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation) —— 六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）
-- [GroupManager](https://github.com/mjy1113451/group_manager) —— 加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）
-- [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian) —— 踢人撤回历史（#145）
+- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）
+- [GroupManager](https://github.com/mjy1113451/group_manager)（AGPL-v3）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核），未复用其代码，自行实现
+- [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian) —— **功能对齐**：踢人撤回历史（#145），未复用其代码，自行实现
 
 感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的强大插件框架！
 ---
