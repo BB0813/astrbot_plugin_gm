@@ -17,6 +17,7 @@ import re  # 用于群相册命令前缀解析、编号提取等
 import time
 import asyncio
 import base64
+import hashlib
 from collections import defaultdict
 from pathlib import Path
 
@@ -163,6 +164,8 @@ class GroupAdminPlugin(Star):
             "whitelist_users": [],
             "admin_bypass": True,
             "notify_on_violation": True,
+            # #162：用户自定义违禁图片（按 MD5 比对），支持按群覆盖
+            "banned_images": [],
             # ====== 撤回消息历史（对齐 astrbot_plugin_batchrecall，修复 #122） ======
             "max_message_history": 50,
             # ====== 踢人自动撤回该成员近期消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） ======
@@ -647,6 +650,7 @@ class GroupAdminPlugin(Star):
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
         "发群公告", "排名", "清除数据", "举报", "status",
         "添加群待办", "取消群待办", "给我头衔", "加群申请待处理", "群信息", "群名称", "群标签", "群相册",
+        "添加违禁图片", "删除违禁图片", "查看违禁图片",
     )
 
     def _is_plugin_command(self, text: str) -> bool:
@@ -1098,6 +1102,7 @@ class GroupAdminPlugin(Star):
         default_map = {
             "image": 600, "spam": 600, "profanity": 600,
             "ad": 600, "link": 600, "group_promotion": 600,
+            "banned_image": 600,
         }
         try:
             v = int(self.get_group_setting(group_id, key, default_map.get(kind, 600)) or 600)
@@ -1134,6 +1139,7 @@ class GroupAdminPlugin(Star):
             label_map = {
                 "image": "违规图片", "spam": "刷屏", "profanity": "骂人",
                 "ad": "广告", "link": "链接", "group_promotion": "群号推广",
+                "banned_image": "违禁图片",
             }
             label = label_map.get(kind, "违规")
             note = f"检测到{label}行为"
@@ -1175,9 +1181,13 @@ class GroupAdminPlugin(Star):
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
                 await self._handle_violation(event, "group_promotion", group_id, user_id, mid)
                 return True
-        # 3) 图片检测
+        # 3) 图片检测（#162 违禁图 MD5 比对先于 AI 鉴图）
         image_urls = self._collect_image_urls(raw)
         for url in image_urls:
+            if await self._check_banned_image(url, group_id):
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                await self._handle_violation(event, "banned_image", group_id, user_id, mid, "图片命中违禁图")
+                return True
             violated, reason = await self._check_image(url)
             if violated:
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
@@ -1221,6 +1231,31 @@ class GroupAdminPlugin(Star):
                         urls.append(u)
         return urls
 
+    async def _check_banned_image(self, image_url: str, group_id: str) -> bool:
+        """#162：检查图片 MD5 是否在全局/本群违禁图列表中。
+
+        仅快速预筛原图二次传播；截断或下载失败一律视为未命中（放行），
+        不阻塞后续 AI 鉴图链路。
+        """
+        image_data, truncated = await self._download_image(image_url)
+        if truncated or not image_data:
+            return False
+        md5 = hashlib.md5(image_data).hexdigest()
+        global_banned = set(self.config.get("banned_images", []) or [])
+        group_banned = set(self.get_group_setting(group_id, "banned_images", []) or [])
+        return md5 in (global_banned | group_banned)
+
+    async def _compute_image_md5(self, image_url: str):
+        """下载图片并计算 MD5，供 /添加违禁图片 使用。
+
+        返回 (md5: str|None, truncated: bool)。下载失败返回 (None, False)；
+        图片超过 10MB 时返回 (None, True)，调用方应提示用户图片过大。
+        """
+        image_data, truncated = await self._download_image(image_url)
+        if not image_data:
+            return None, truncated
+        return hashlib.md5(image_data).hexdigest(), truncated
+
     async def _check_image(self, image_url: str):
         """调用 AI API 审核图片。返回 (is_violation, reason)。"""
         if aiohttp is None:
@@ -1232,7 +1267,7 @@ class GroupAdminPlugin(Star):
         if not api_endpoint:
             return False, ""
         try:
-            image_data = await self._download_image(image_url)
+            image_data, _truncated = await self._download_image(image_url)
             if not image_data:
                 return False, ""
             image_b64 = base64.b64encode(image_data).decode("utf-8")
@@ -1333,31 +1368,47 @@ class GroupAdminPlugin(Star):
             logger.error(f"[群违规检测] Moderation API 调用失败: {e}")
             return False, ""
 
-    async def _download_image(self, url: str):
+    async def _download_image(self, url: str, max_size: int = 10 * 1024 * 1024):
+        """下载图片。#162 增强：限制最大 10MB，避免慢速/大文件阻塞检测。
+
+        返回 (data, truncated) 元组：truncated=True 表示数据被截断到 max_size+1，
+        调用方（如 /添加违禁图片）应拒绝基于截断数据计算指纹。
+        """
         if aiohttp is None:
-            return None
+            return None, False
         try:
             if url.startswith("http://") or url.startswith("https://"):
-                timeout = aiohttp.ClientTimeout(total=30)
+                timeout = aiohttp.ClientTimeout(total=15)
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=timeout) as resp:
-                        if resp.status == 200:
-                            return await resp.read()
+                        if resp.status != 200:
+                            return None, False
+                        # Content-Type 必须为图片
+                        ct = resp.headers.get("Content-Type", "")
+                        if ct and not ct.startswith("image/"):
+                            return None, False
+                        data = await resp.content.read(max_size + 1)
+                        return data, len(data) > max_size
             elif url.startswith("base64://"):
-                return base64.b64decode(url[9:])
+                # base64 内嵌数据本身即图片内容，无需 Content-Type 校验
+                data = base64.b64decode(url[9:])
+                truncated = len(data) > max_size
+                return (data[:max_size + 1] if truncated else data), truncated
             elif url.startswith("file://"):
                 with open(url[7:], "rb") as f:
-                    return f.read()
+                    data = f.read(max_size + 1)
+                    return data, len(data) > max_size
             elif url and not url.startswith("http"):
                 # 某些实现把图片作为本地路径返回
                 try:
                     with open(url, "rb") as f:
-                        return f.read()
+                        data = f.read(max_size + 1)
+                        return data, len(data) > max_size
                 except OSError:
-                    return None
+                    return None, False
         except Exception as e:
             logger.error(f"[群违规检测] 下载图片失败: {e}")
-        return None
+        return None, False
 
     # ----- 刷屏检测 -----
 
@@ -2708,7 +2759,7 @@ class GroupAdminPlugin(Star):
         text = f"群名称: {name}\n群号: {gid}\n群标签: {tags_str}\n成员数: {member_count}"
         yield event.plain_result(text)
 
-    # #164: /群相册 — 引用图片消息上传到群相册（群管/群主）
+# #164: /群相册 — 引用图片消息上传到群相册（群管/群主）
     @filter.command("群相册", "引用图片上传到群相册（/群相册 相册名）")
     async def group_album_upload_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
@@ -2799,7 +2850,7 @@ class GroupAdminPlugin(Star):
             else "上传到群相册失败（当前 OneBot 实现可能不支持群相册 API）"
         )
 
-    # #166: /群名称 — 修改本群名（群管/群主）
+# #166: /群名称 — 修改本群名（群管/群主）
     @filter.command("群名称", "修改本群名称（/群名称 新群名）")
     async def set_group_name_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
@@ -2852,6 +2903,133 @@ class GroupAdminPlugin(Star):
         ok = await self._execute_action(event, "set_group_tag",
                                         group_id=group_id, tag=text)
         yield event.plain_result(f"已添加群标签「{text}」" if ok else "添加群标签失败（当前 OneBot 实现可能不支持此 API）")
+
+    # #162: /添加违禁图片 — 引用图片消息加入违禁图列表（群管/群主）
+    @filter.command("添加违禁图片", "引用图片消息加入违禁图列表")
+    async def add_banned_image_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            yield event.plain_result("请先在群聊发送图片，然后引用该图片回复 /添加违禁图片")
+            return
+        # 拉取被引用消息中的图片
+        msg = await self._execute_action(event, "get_msg",
+                                          message_id=int(reply_id), return_raw=True)
+        if not msg:
+            yield event.plain_result("无法获取引用消息内容")
+            return
+        msg_data = msg.get("data") if isinstance(msg, dict) else msg
+        image_url = ""
+        if isinstance(msg_data, dict):
+            for seg in (msg_data.get("message") or []):
+                if not isinstance(seg, dict):
+                    continue
+                if seg.get("type") == "image":
+                    image_url = (seg.get("data") or {}).get("url", "") or (seg.get("data") or {}).get("file", "")
+                    if image_url:
+                        break
+        if not image_url:
+            yield event.plain_result("引用消息中未找到图片")
+            return
+        md5, truncated = await self._compute_image_md5(image_url)
+        if truncated:
+            yield event.plain_result("图片过大（超过 10MB），无法加入违禁列表")
+            return
+        if not md5:
+            yield event.plain_result("下载图片失败，无法计算 MD5")
+            return
+        # 写入本群覆盖（统一走 _get_group_override_list，与 /设置群配置 同一持久化入口）
+        banned = self._get_group_override_list(group_id, "banned_images")
+        if md5 in banned:
+            yield event.plain_result("该图片已在本群违禁列表中")
+            return
+        banned.append(md5)
+        try:
+            self.save_config()
+        except Exception as e:
+            # 持久化失败时回滚内存态，避免用户下次被提示『已存在』
+            banned.remove(md5)
+            logger.error(f"保存违禁图片配置失败: {e}")
+            yield event.plain_result("保存失败，未添加该违禁图片")
+            return
+        yield event.plain_result(f"已添加违禁图片（MD5: {md5[:8]}...），本群现有 {len(banned)} 张违禁图")
+
+    # #162: /删除违禁图片 — 删除本群某张违禁图（群管/群主）
+    @filter.command("删除违禁图片", "删除本群某张违禁图（/删除违禁图片 <md5前8位>）")
+    async def remove_banned_image_cmd(self, event: AstrMessageEvent, md5_prefix: str = ""):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        # #162 review: 校验 md5_prefix 为 hex 字符（仅 0-9a-f），避免与未来 sha256 等格式冲突
+        md5_prefix = (md5_prefix or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{4,32}", md5_prefix):
+            yield event.plain_result("MD5 前缀必须为 4-32 位 hex 字符（0-9a-f），例如 /删除违禁图片 1a2b3c4d")
+            return
+        gconf = self._get_group_override_list(group_id, "banned_images")
+        banned = list(gconf)
+        if not banned:
+            yield event.plain_result("本群无违禁图片")
+            return
+        matches = [m for m in banned if str(m).startswith(md5_prefix)]
+        if not matches:
+            yield event.plain_result(f"未找到 MD5 前缀为 {md5_prefix} 的违禁图")
+            return
+        if len(matches) > 1:
+            yield event.plain_result(f"匹配到多张（{len(matches)}），请用更长的前缀：\n" + "\n".join(matches))
+            return
+        target = matches[0]
+        self._get_group_override_list(group_id, "banned_images").remove(target)
+        try:
+            self.save_config()
+        except Exception as e:
+            # 持久化失败时回滚内存态
+            self._get_group_override_list(group_id, "banned_images").append(target)
+            logger.error(f"保存违禁图片配置失败: {e}")
+            yield event.plain_result("保存失败，未删除该违禁图片")
+            return
+        yield event.plain_result(f"已删除违禁图片 {target}，本群剩余 {len(banned) - 1} 张")
+
+    # #162: /查看违禁图片 — 查看本群违禁图列表（群管/群主）
+    @filter.command("查看违禁图片", "查看本群违禁图片列表")
+    async def list_banned_images_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        banned = self._get_group_override_list(group_id, "banned_images")
+        global_banned = self.config.get("banned_images", [])
+        lines = []
+        if banned:
+            lines.append(f"本群违禁图（{len(banned)} 张）：")
+            for m in banned:
+                lines.append(f"  - {m}")
+        if isinstance(global_banned, list) and global_banned:
+            lines.append(f"\n全局违禁图（{len(global_banned)} 张）：")
+            for m in global_banned:
+                lines.append(f"  - {m}")
+        if not lines:
+            yield event.plain_result("本群与全局均无违禁图片")
+            return
+        yield event.plain_result("\n".join(lines))
 
     # ===================== 状态查看 =====================
 
