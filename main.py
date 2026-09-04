@@ -1232,21 +1232,29 @@ class GroupAdminPlugin(Star):
         return urls
 
     async def _check_banned_image(self, image_url: str, group_id: str) -> bool:
-        """#162：检查图片 MD5 是否在全局/本群违禁图列表中。"""
-        image_data = await self._download_image(image_url)
-        if not image_data:
+        """#162：检查图片 MD5 是否在全局/本群违禁图列表中。
+
+        仅快速预筛原图二次传播；截断或下载失败一律视为未命中（放行），
+        不阻塞后续 AI 鉴图链路。
+        """
+        image_data, truncated = await self._download_image(image_url)
+        if truncated or not image_data:
             return False
         md5 = hashlib.md5(image_data).hexdigest()
         global_banned = set(self.config.get("banned_images", []) or [])
         group_banned = set(self.get_group_setting(group_id, "banned_images", []) or [])
         return md5 in (global_banned | group_banned)
 
-    async def _compute_image_md5(self, image_url: str) -> str:
-        """下载图片并计算 MD5，供 /添加违禁图片 使用。"""
-        image_data = await self._download_image(image_url)
+    async def _compute_image_md5(self, image_url: str):
+        """下载图片并计算 MD5，供 /添加违禁图片 使用。
+
+        返回 (md5: str|None, truncated: bool)。下载失败返回 (None, False)；
+        图片超过 10MB 时返回 (None, True)，调用方应提示用户图片过大。
+        """
+        image_data, truncated = await self._download_image(image_url)
         if not image_data:
-            return ""
-        return hashlib.md5(image_data).hexdigest()
+            return None, truncated
+        return hashlib.md5(image_data).hexdigest(), truncated
 
     async def _check_image(self, image_url: str):
         """调用 AI API 审核图片。返回 (is_violation, reason)。"""
@@ -1259,7 +1267,7 @@ class GroupAdminPlugin(Star):
         if not api_endpoint:
             return False, ""
         try:
-            image_data = await self._download_image(image_url)
+            image_data, _truncated = await self._download_image(image_url)
             if not image_data:
                 return False, ""
             image_b64 = base64.b64encode(image_data).decode("utf-8")
@@ -1361,37 +1369,46 @@ class GroupAdminPlugin(Star):
             return False, ""
 
     async def _download_image(self, url: str, max_size: int = 10 * 1024 * 1024):
-        """下载图片。#162 增强：限制最大 10MB，避免慢速/大文件阻塞检测。"""
+        """下载图片。#162 增强：限制最大 10MB，避免慢速/大文件阻塞检测。
+
+        返回 (data, truncated) 元组：truncated=True 表示数据被截断到 max_size+1，
+        调用方（如 /添加违禁图片）应拒绝基于截断数据计算指纹。
+        """
         if aiohttp is None:
-            return None
+            return None, False
         try:
             if url.startswith("http://") or url.startswith("https://"):
                 timeout = aiohttp.ClientTimeout(total=15)
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=timeout) as resp:
                         if resp.status != 200:
-                            return None
+                            return None, False
                         # Content-Type 必须为图片
                         ct = resp.headers.get("Content-Type", "")
                         if ct and not ct.startswith("image/"):
-                            return None
-                        return await resp.content.read(max_size + 1)
+                            return None, False
+                        data = await resp.content.read(max_size + 1)
+                        return data, len(data) > max_size
             elif url.startswith("base64://"):
+                # base64 内嵌数据本身即图片内容，无需 Content-Type 校验
                 data = base64.b64decode(url[9:])
-                return data[:max_size + 1] if len(data) > max_size else data
+                truncated = len(data) > max_size
+                return (data[:max_size + 1] if truncated else data), truncated
             elif url.startswith("file://"):
                 with open(url[7:], "rb") as f:
-                    return f.read(max_size + 1)
+                    data = f.read(max_size + 1)
+                    return data, len(data) > max_size
             elif url and not url.startswith("http"):
                 # 某些实现把图片作为本地路径返回
                 try:
                     with open(url, "rb") as f:
-                        return f.read(max_size + 1)
+                        data = f.read(max_size + 1)
+                        return data, len(data) > max_size
                 except OSError:
-                    return None
+                    return None, False
         except Exception as e:
             logger.error(f"[群违规检测] 下载图片失败: {e}")
-        return None
+        return None, False
 
     # ----- 刷屏检测 -----
 
@@ -2922,7 +2939,10 @@ class GroupAdminPlugin(Star):
         if not image_url:
             yield event.plain_result("引用消息中未找到图片")
             return
-        md5 = await self._compute_image_md5(image_url)
+        md5, truncated = await self._compute_image_md5(image_url)
+        if truncated:
+            yield event.plain_result("图片过大（超过 10MB），无法加入违禁列表")
+            return
         if not md5:
             yield event.plain_result("下载图片失败，无法计算 MD5")
             return
