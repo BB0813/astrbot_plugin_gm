@@ -19,7 +19,7 @@
 | `_check_with_openai_vision` | 移植 | 视觉模型推理 |
 | `_check_with_moderation_api` | 移植 | 审核 API 模式 |
 | `_parse_openai_response` | 移植 | 视觉模型响应解析 |
-| `_download_image` | 移植并修改 | 原样移植 + 增加 10MB 截断保护（#162）并返回 `(data, truncated)` |
+| `_download_image` | 移植并修改 | 适配本插件基建需要而修改，签名与上游不兼容：增加 10MB 截断保护（#162），返回值由 `bytes` 改为 `(data, truncated)` 元组。该修改仅限本插件内部使用，未向上游同步；如需向上游贡献请参照 #162 实现 |
 | `_check_spam` | 移植 | 刷屏检测（时间窗口聚合） |
 | `_check_profanity` | 移植 | 骂人检测（AI / 关键词双模式） |
 | `_check_profanity_with_ai` | 移植 | AI 骂人识别 |
