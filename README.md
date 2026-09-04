@@ -67,6 +67,41 @@
 
 > 检测覆盖：图片 AI 审核（色情 / 擦边）、刷屏、骂人（AI 或关键词）、广告、链接、群号推广；命中后一律：撤回 + 按对应时长禁言。
 
+**六大检测能力（对齐 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）：**
+
+| 检测项 | 说明 | 默认状态 |
+|--------|------|---------|
+| 图片违规 | AI 视觉模型（OpenAI Vision 兼容）分析色情 / 擦边，可设检测阈值（默认 0.7） | 开（需配置 `api_endpoint` / `api_key` / `model_name`） |
+| 刷屏 | 时间窗口（默认 10 秒）内消息数超过阈值（默认 5 条）判定刷屏 | 开 |
+| 骂人 | AI 识别（`profanity_use_ai=true` 默认）或关键词匹配双模式，关键词可动态增删 | 开 |
+| 广告 | 预设 24 个常见广告关键词（加群 / 加微信 / 代练 / 外挂 / 刷钻等），可动态增删 | 开 |
+| 链接 | 匹配 http/https/www 等链接格式 | 关（`link_check_enabled`） |
+| 群号推广 | 推广关键词（进群 / 加群 / 群号 / 入群 / 拉群 / 建群）+ 识别 5-12 位群号 | 开 |
+
+> 白名单用户（`whitelist_users`）不受检测限制；管理员默认豁免（`admin_bypass`）；检测到违规后可选择群内通知（`notify_on_violation`）。
+
+### 加群申请自动审核（对齐 [GroupManager](https://github.com/mjy1113451/group_manager)）
+
+加群申请验证流程（受总开关 `join_audit_enabled` 控制，关闭后仅保留管理员手动审核）：
+
+1. **违禁词自动拒绝**：申请验证消息命中 `violation_keywords` → 自动拒绝，并按 `join_reject_reason` 给出理由
+2. **关键词自动同意**：验证消息命中 `join_approve_keywords` → 自动同意
+3. **群内提醒人工审核**：`join_request_notify_in_group=true` 时，申请信息发到群内，管理员**引用回复「同意」或「拒绝 [理由]」**即可完成审核
+4. **管理员私聊通知**：处理结果推送给 `join_notify_admins` 列表中的 QQ
+
+```
+/加群申请待处理        # 查看本群未处理的加群申请列表
+```
+
+关键词配置示例（在群内执行）：
+
+```
+/设置群配置 join_approve_keywords ["学生", "老师"]
+/设置群配置 join_reject_reason "请填写真实验证信息"
+```
+
+> 常用验证思路：学习群放行「学生 / 老师 / 手机号」，工作群放行「部门 / 工号」，兴趣群放行兴趣关键词；对已知可信用户，用违禁词反向拦截（只拒不可信内容）往往比逐个列白名单更高效。
+
 ---
 
 ## 安装
@@ -151,6 +186,25 @@ pip install astrbot_plugin_group_admin
 
 按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
+
+### 图片 AI 审核配置（对齐 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）
+
+图片违规检测使用 OpenAI 兼容的视觉 API，需在插件配置中填写：
+
+| 配置项 | 说明 | 示例 |
+|--------|------|------|
+| `api_type` | 审核方式：`openai_vision`（视觉模型）或 `moderation`（审核 API） | `openai_vision` |
+| `api_endpoint` | chat/completions 端点 | `https://api.siliconflow.cn/v1/chat/completions` |
+| `api_key` | API 密钥 | `sk-xxxxxxxx` |
+| `model_name` | 支持视觉的模型 | `Qwen/Qwen2-VL-72B-Instruct` |
+| `threshold` | 违规判定阈值 0-1，越低越严格 | `0.7` |
+| `check_porn` / `check_sexy` | 分别开关色情 / 擦边检测 | `true` |
+| `detection_prompt` | 自定义检测提示词（留空用内置） | 空 |
+
+推荐视觉模型：`Qwen/Qwen2-VL-72B-Instruct`、`gpt-4o`、`deepseek-ai/deepseek-vl2`。
+
+> 性能提示：图片检测会消耗 API 调用，建议通过 `enabled_groups` 只在需要的群启用，并用 `whitelist_users` 豁免信任用户。链接检测默认关闭（`link_check_enabled`），按需开启。
+
 ---
 
 ## `/撤回` 用法与兼容性
@@ -242,7 +296,53 @@ pip install astrbot_plugin_group_admin
 
 # 自怼（禁言自己 60 分钟）
 /禁我 60
+
+# 加群申请：设置自动同意关键词
+/设置群配置 join_approve_keywords ["学生"]
+
+# 违规检测：添加骂人关键词
+/添加骂人关键词 笨蛋
 ```
+
+---
+
+## 常见问题
+
+### 违规检测相关
+
+**Q: 消息没有被撤回？**
+A: ① 确认机器人有群管理员权限（撤回 + 禁言都需要）；② 检查该群是否已启用检测（`/设置群配置 enabled_groups true`）；③ 检查日志中是否有撤回相关输出。
+
+**Q: 图片检测没有反应？**
+A: 检查 `api_endpoint` / `api_key` / `model_name` 是否已配置，日志中应有 `[群违规检测] 检测到 X 张图片` 的输出；未配置 API 时图片审核会静默跳过。
+
+**Q: AI 检测不准确？**
+A: ① 调整 `threshold`（降低更严格）；② 更换视觉模型；③ 通过 `detection_prompt` 自定义检测提示词。
+
+**Q: 刷屏检测误判？**
+A: 调大 `spam_threshold` 和 `spam_time_window`，例如 10 条 / 20 秒更宽松。
+
+**Q: 如何关闭某个检测？**
+A: 对应开关配置设为 false（如 `spam_check_enabled`、`profanity_check_enabled`、`ad_check_enabled`、`link_check_enabled`、`group_promotion_check_enabled`），可按群覆盖。
+
+**Q: 白名单用户为什么还会被检测？**
+A: 检查 `whitelist_users` 配置，确保 QQ 号为纯数字字符串。
+
+### 加群审核相关
+
+**Q: 自动审核不生效？**
+A: ① 检查总开关 `join_audit_enabled` 是否为 true；② 违禁词拒绝 / 关键词同意需要该群在 `enabled_groups` 中（或按群覆盖 `enabled_groups true`）。
+
+**Q: 群内引用回复审核怎么用？**
+A: 配置 `join_request_notify_in_group true` 后，新申请会发到群内；管理员**引用那条提醒消息回复「同意」或「拒绝 理由」**即可。
+
+### 撤回相关
+
+**Q: `/撤回 N` 提示不支持？**
+A: 当前 OneBot 实现不支持 `get_group_msg_history` 且本地历史为空，请改用「引用消息 + /撤回」。
+
+**Q: 超过 2 分钟的消息撤不回？**
+A: OneBot `delete_msg` 只能撤回约 2 分钟内的消息，超时会静默失败。
 
 ---
 
@@ -250,7 +350,7 @@ pip install astrbot_plugin_group_admin
 
 ```
 astrbot_plugin_gm/
-├── main.py              # 插件主逻辑（2800+ 行）
+├── main.py              # 插件主逻辑（3000+ 行）
 ├── metadata.yaml         # 插件元信息
 ├── _conf_schema.json     # 配置项说明
 ├── README.md             # 本文件
@@ -276,6 +376,16 @@ astrbot_plugin_gm/
 - 💡 有功能建议？请先提交 Issue 讨论，待 AI 审核确认后可提 PR
 - 🔧 修复难度低到中的 PR，会被优先合并
 - 作者的群1075920323
+
+## 致谢
+
+本插件整合了以下优秀插件的功能：
+
+- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation) —— 六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）
+- [GroupManager](https://github.com/mjy1113451/group_manager) —— 加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）
+- [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian) —— 踢人撤回历史（#145）
+
+感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的强大插件框架！
 ---
 
 > 本插件仅供学习与交流使用，请遵守 QQ / QQ 群的相关使用规范。
