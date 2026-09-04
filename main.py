@@ -2799,6 +2799,60 @@ class GroupAdminPlugin(Star):
             else "上传到群相册失败（当前 OneBot 实现可能不支持群相册 API）"
         )
 
+    # #166: /群名称 — 修改本群名（群管/群主）
+    @filter.command("群名称", "修改本群名称（/群名称 新群名）")
+    async def set_group_name_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        text = self._extract_text(raw).strip()
+        for prefix in ("/群名称", "群名称"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+        if not text:
+            yield event.plain_result("请提供新群名，例如 /群名称 我的群")
+            return
+        if len(text) > 60:
+            yield event.plain_result("群名过长（最多60字符）")
+            return
+        ok = await self._execute_action(event, "set_group_name",
+                                        group_id=group_id, group_name=text)
+        yield event.plain_result(f"已修改群名为「{text}」" if ok else "修改群名失败（当前 OneBot 实现可能不支持此 API，或机器人权限不足）")
+
+    # #163: /群标签 — 添加群标签（群管/群主）
+    @filter.command("群标签", "添加群标签（/群标签 标签名）")
+    async def set_group_tag_cmd(self, event: AstrMessageEvent):
+        raw = self._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        sender_id = str(raw.get("user_id"))
+        if not self._is_authorized(raw, sender_id):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        group_id = str(raw.get("group_id"))
+        text = self._extract_text(raw).strip()
+        for prefix in ("/群标签", "群标签"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+        if not text:
+            yield event.plain_result("请提供标签内容，例如 /群标签 编程交流")
+            return
+        if len(text) > 20:
+            yield event.plain_result("标签过长（最多20字符）")
+            return
+        ok = await self._execute_action(event, "set_group_tag",
+                                        group_id=group_id, tag=text)
+        yield event.plain_result(f"已添加群标签「{text}」" if ok else "添加群标签失败（当前 OneBot 实现可能不支持此 API）")
+
     # ===================== 状态查看 =====================
 
     # #74: 设置群配置（仅插件管理员）

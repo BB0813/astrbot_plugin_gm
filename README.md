@@ -42,6 +42,8 @@
 | `/加群申请待处理` | 插件管理员 | 查看本群未处理的加群申请列表 |
 | `/群信息` | 任意成员 | 查看本群资料（名称/号/标签/人数） |
 | `/群相册 相册名` | 插件管理员 | 引用图片消息上传到群相册 |
+| `/群名称 新群名` | 插件管理员 | 修改本群名 |
+| `/群标签 标签名` | 插件管理员 | 添加本群标签 |
 
 ### 按群覆盖配置
 
@@ -97,7 +99,7 @@ pip install astrbot_plugin_group_admin
 | `mute_notice` | bool | `true` | 禁言 / 解禁后回复结果 |
 | `reject_re_add` | bool | `false` | 踢人后自动拒绝该用户再次加群 |
 | `auto_recall_keywords` | list | `[]` | Bot 发言自动撤回关键词列表（推荐按群覆盖） |
-| `auto_recall_enabled_groups` | list | `[]` | 启用自动撤回的群 ID 列表（推荐按群覆盖） |
+| `auto_recall_enabled_groups` | list | `[]` | 启用自动撤回的群 ID 列表（`*` / `all` 表示全部；只配置了 `auto_recall_keywords` 而未配置本项时，默认对全部群生效） |
 | `enabled_groups` | list | `[]` | 启用违规检测的群号列表（`*` / `all` 表示全部；推荐按群覆盖） |
 | `group_overrides` | dict | `{}` | 按群独立配置覆盖：`{群号: {key: value}}` |
 | `max_message_history` | int | `50` | 每群内存缓存的撤回消息历史条数（用于 /撤回 N 与 /撤回自身 N） |
