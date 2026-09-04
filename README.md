@@ -105,6 +105,9 @@ pip install astrbot_plugin_group_admin
 | `max_message_history` | int | `50` | 每群内存缓存的撤回消息历史条数（用于 /撤回 N 与 /撤回自身 N） |
 | `join_reject_reason` | string | `"不满足加群条件"` | 加群申请自动拒绝时展示的默认理由（管理员可通过「拒绝 理由」自定义） |
 | `join_audit_enabled` | bool | `true` | 加群申请自动审核总开关（关闭后违禁词/关键词自动审核都跳过；管理员手动审核不受影响） |
+| `title_admins` | list | `[]` | 可设置/取消群头衔的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
+| `group_admin_admins` | list | `[]` | 可设置/取消群管理的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
+| `kick_admins` | list | `[]` | 可踢人的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
 | `voice_check_enabled` | bool | `false` | 启用语音消息转文字违规检测（#128；可按群覆盖） |
@@ -198,7 +201,9 @@ pip install astrbot_plugin_group_admin
 1. **插件管理员**：拥有使用所有管理命令的权限。识别方式：
    - QQ 群管理员
    - QQ 群主
-2. **专项权限管理员**：按群覆盖的 `title_admins`、`group_admin_admins`、`kick_admins` 等专项权限列表中的人，仅对相应操作生效。
+2. **专项权限管理员**：`title_admins`、`group_admin_admins`、`kick_admins` 等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。
+
+三个专项权限列表均支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（群内 `/设置群配置`，优先级更高）。
 
 > 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
 
