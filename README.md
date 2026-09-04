@@ -2,7 +2,9 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-插件-green.svg)](https://github.com/Snowyyu/AstrBot)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-red.svg)](LICENSE)
+
+> 本项目采用 **AGPL-3.0** 许可证，是基于网络分发（Bot / 服务器场景）的**主动选择**：以服务器形式对外提供功能的项目，AGPL 要求部署方开放修改后的源码，与 QQ 群管 Bot 的部署形态契合。本插件的违规检测模块移植自 MIT 许可证的 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)，见 [NOTICE](NOTICE)。
 
 ---
 #注∶在插件配置设置完会设置为默认信息，即为全局配置
@@ -384,8 +386,8 @@ astrbot_plugin_gm/
 
 本插件整合了以下优秀插件的功能。其中**六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）的检测逻辑与 API 调用代码移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT License）**，已按其许可证要求保留来源声明；其余插件仅为功能设计参考：
 
-- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）
-- [GroupManager](https://github.com/mjy1113451/group_manager)（AGPL-v3）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核），未复用其代码，自行实现
+- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广），详见 [NOTICE](NOTICE)
+- [GroupManager](https://github.com/mjy1113451/group_manager)（AGPL-v3）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）。**⚠️ 依据 AGPL-v3 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，须以 AGPL-v3 释出整个衍生项目**
 - [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian) —— **功能对齐**：踢人撤回历史（#145），未复用其代码，自行实现
 
 感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的强大插件框架！

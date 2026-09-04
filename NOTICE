@@ -8,7 +8,28 @@
 - 许可证：MIT License
 - 声明：本插件（astrbot_plugin_gm）中的「群违规检测」模块（图片 AI 审核 / 刷屏 / 骂人 / 广告 / 链接 / 群号推广的检测逻辑与 OpenAI 兼容 API 调用）移植自该项目代码，并按 MIT License 保留来源声明。
 - MIT License 全文：https://opensource.org/licenses/MIT
-- 移植代码所在的源码文件：main.py（`_check_image` / `_check_spam` / `_check_profanity` / `_check_ad` / `_check_link` / `_check_group_promotion` / `_handle_violation` / `_moderation_dispatch` 及其辅助方法）
+
+### 移植代码清单（main.py，按「移植 / 移植并修改 / 独立实现」标注）
+
+以下方法源自 astrbot_plugin_group_moderation，标注「移植并修改」的已在接口层面适配本插件现有的 `_execute_action` / `get_group_setting` / `_mute_member` 等基建，但检测逻辑本身保持移植自原项目：
+
+| 方法 | 分类 | 说明 |
+|------|------|------|
+| `_check_image` | 移植 | 图片 AI 审核入口（主流程） |
+| `_check_with_openai_vision` | 移植 | 视觉模型推理 |
+| `_check_with_moderation_api` | 移植 | 审核 API 模式 |
+| `_parse_openai_response` | 移植 | 视觉模型响应解析 |
+| `_download_image` | 移植并修改 | 原样移植 + 增加 10MB 截断保护（#162）并返回 `(data, truncated)` |
+| `_check_spam` | 移植 | 刷屏检测（时间窗口聚合） |
+| `_check_profanity` | 移植 | 骂人检测（AI / 关键词双模式） |
+| `_check_profanity_with_ai` | 移植 | AI 骂人识别 |
+| `_check_ad` | 移植 | 广告关键词检测 |
+| `_check_link` | 移植 | 链接检测 |
+| `_check_group_promotion` | 移植 | 群号推广检测 |
+| `_handle_violation` | 独立实现 | 原项目按违规类型拆 4 个 `_handle_*_violation`；本插件合并为 1 个统一处置方法（撤回 + 禁言 + 通知），复用本插件已有的 `_mute_member` / `_record_mute_and_maybe_kick` |
+| `_moderation_dispatch` | 独立实现 | 六类检测的统一调度入口，原项目无对应方法 |
+
+其余辅助逻辑（`_record_violation` / `_is_user_whitelisted` / `_moderation_admin_bypass` / `_moderation_ban_duration` 及全部 `_*_cmd` 命令方法）为本插件独立实现，未复用原项目代码。
 
 ### MIT License（引用）
 
@@ -31,3 +52,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 其余功能（加群申请自动审核参考自 GroupManager、踢人撤回历史参考自 astrbot_plugin_group_guardian）均为独立实现，未复用其代码，仅为设计参考。
+
+## GroupManager（仅设计参考，代码禁止复用）
+
+- 项目主页：https://github.com/mjy1113451/group_manager
+- 许可证：**AGPL-v3**
+- **⚠️ 重要声明：GroupManager 采用 AGPL-v3 许可证。本插件未复用其任何代码 —— 包括正则片段、关键词匹配逻辑、任何源码片段 —— 仅参考了其公开文档中描述的功能设计（加群申请自动审核：违禁词拒绝 / 关键词同意 / 群内人工审核流程）。本插件中的加群审核功能为完全独立实现。**
+- 若未来任何版本复用其代码，整个衍生项目将必须以 AGPL-v3 释出；当前版本不涉及。
