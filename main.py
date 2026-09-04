@@ -2784,42 +2784,6 @@ class GroupAdminPlugin(Star):
         if not image_url:
             yield event.plain_result("引用消息中未找到图片")
             return
-
-    # #162: /添加违禁图片 — 引用图片消息加入违禁图列表（群管/群主）
-    @filter.command("添加违禁图片", "引用图片消息加入违禁图列表")
-    async def add_banned_image_cmd(self, event: AstrMessageEvent):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        sender_id = str(raw.get("user_id"))
-        if not self._is_authorized(raw, sender_id):
-            yield event.plain_result("只有群管理员或群主可执行此操作")
-            return
-        group_id = str(raw.get("group_id"))
-        reply_id = self._get_reply_id(event)
-        if not reply_id:
-            yield event.plain_result("请先在群聊发送图片，然后引用该图片回复 /添加违禁图片")
-            return
-        # 拉取被引用消息中的图片
-        msg = await self._execute_action(event, "get_msg",
-                                          message_id=int(reply_id), return_raw=True)
-        if not msg:
-            yield event.plain_result("无法获取引用消息内容")
-            return
-        msg_data = msg.get("data") if isinstance(msg, dict) else msg
-        image_url = ""
-        if isinstance(msg_data, dict):
-            for seg in (msg_data.get("message") or []):
-                if not isinstance(seg, dict):
-                    continue
-                if seg.get("type") == "image":
-                    image_url = (seg.get("data") or {}).get("url", "") or (seg.get("data") or {}).get("file", "")
-                    if image_url:
-                        break
-        if not image_url:
-            yield event.plain_result("引用消息中未找到图片")
-            return
         # 1) 尝试创建相册目录；失败时尝试 get_group_file_list 找已有目录
         folder_id = ""
         folder_result = await self._execute_action(event, "create_group_file_folder",
