@@ -2946,18 +2946,20 @@ class GroupAdminPlugin(Star):
         if not md5:
             yield event.plain_result("下载图片失败，无法计算 MD5")
             return
-        # 写入本群覆盖
-        overrides = self.config.setdefault("group_overrides", {})
-        gconf = overrides.setdefault(group_id, {})
-        banned = gconf.setdefault("banned_images", [])
-        if not isinstance(banned, list):
-            banned = [banned]
+        # 写入本群覆盖（统一走 _get_group_override_list，与 /设置群配置 同一持久化入口）
+        banned = self._get_group_override_list(group_id, "banned_images")
         if md5 in banned:
             yield event.plain_result("该图片已在本群违禁列表中")
             return
         banned.append(md5)
-        gconf["banned_images"] = banned
-        self.save_config()
+        try:
+            self.save_config()
+        except Exception as e:
+            # 持久化失败时回滚内存态，避免用户下次被提示『已存在』
+            banned.remove(md5)
+            logger.error(f"保存违禁图片配置失败: {e}")
+            yield event.plain_result("保存失败，未添加该违禁图片")
+            return
         yield event.plain_result(f"已添加违禁图片（MD5: {md5[:8]}...），本群现有 {len(banned)} 张违禁图")
 
     # #162: /删除违禁图片 — 删除本群某张违禁图（群管/群主）
@@ -2977,9 +2979,9 @@ class GroupAdminPlugin(Star):
         if not re.fullmatch(r"[0-9a-f]{4,32}", md5_prefix):
             yield event.plain_result("MD5 前缀必须为 4-32 位 hex 字符（0-9a-f），例如 /删除违禁图片 1a2b3c4d")
             return
-        gconf = self.config.get("group_overrides", {}).get(group_id, {})
-        banned = gconf.get("banned_images", [])
-        if not isinstance(banned, list) or not banned:
+        gconf = self._get_group_override_list(group_id, "banned_images")
+        banned = list(gconf)
+        if not banned:
             yield event.plain_result("本群无违禁图片")
             return
         matches = [m for m in banned if str(m).startswith(md5_prefix)]
@@ -2989,10 +2991,17 @@ class GroupAdminPlugin(Star):
         if len(matches) > 1:
             yield event.plain_result(f"匹配到多张（{len(matches)}），请用更长的前缀：\n" + "\n".join(matches))
             return
-        banned.remove(matches[0])
-        gconf["banned_images"] = banned
-        self.save_config()
-        yield event.plain_result(f"已删除违禁图片 {matches[0]}，本群剩余 {len(banned)} 张")
+        target = matches[0]
+        self._get_group_override_list(group_id, "banned_images").remove(target)
+        try:
+            self.save_config()
+        except Exception as e:
+            # 持久化失败时回滚内存态
+            self._get_group_override_list(group_id, "banned_images").append(target)
+            logger.error(f"保存违禁图片配置失败: {e}")
+            yield event.plain_result("保存失败，未删除该违禁图片")
+            return
+        yield event.plain_result(f"已删除违禁图片 {target}，本群剩余 {len(banned) - 1} 张")
 
     # #162: /查看违禁图片 — 查看本群违禁图列表（群管/群主）
     @filter.command("查看违禁图片", "查看本群违禁图片列表")
@@ -3006,11 +3015,10 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
         group_id = str(raw.get("group_id"))
-        gconf = self.config.get("group_overrides", {}).get(group_id, {})
-        banned = gconf.get("banned_images", [])
+        banned = self._get_group_override_list(group_id, "banned_images")
         global_banned = self.config.get("banned_images", [])
         lines = []
-        if isinstance(banned, list) and banned:
+        if banned:
             lines.append(f"本群违禁图（{len(banned)} 张）：")
             for m in banned:
                 lines.append(f"  - {m}")
