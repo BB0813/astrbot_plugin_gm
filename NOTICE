@@ -9,9 +9,11 @@
 - 声明：本插件（astrbot_plugin_gm）中的「群违规检测」模块（图片 AI 审核 / 刷屏 / 骂人 / 广告 / 链接 / 群号推广的检测逻辑与 OpenAI 兼容 API 调用）移植自该项目代码。**本项目本身采用 AGPL-3.0，与上游同许可证，因此移植代码随本项目以 AGPL-3.0 释出，完全兼容，无需转换许可证。**
 - 许可证全文：https://opensource.org/licenses/AGPL-3.0
 
-### 移植代码清单（main.py，按「移植 / 移植并修改 / 独立实现」标注）
+### 上游代码关联性清单（main.py，按「移植 / 移植并修改 / 独立实现」分类标注）
 
-以下方法源自 astrbot_plugin_group_moderation，标注「移植并修改」的已在接口层面适配本插件现有的 `_execute_action` / `get_group_setting` / `_mute_member` 等基建，但检测逻辑本身保持移植自原项目：
+以下方法与本插件所参考的上游项目（astrbot_plugin_group_moderation）相关。标注「移植」或「移植并修改」的：方法主体源自上游代码，按 MIT/AGPL 兼容要求保留来源声明；标注「独立实现」的：为本插件合并 / 新增的统一入口方法，对应上游多个分散的 `_handle_*_violation`，其代码为本插件自行编写，未复用上游代码。
+
+移植方法中，标注「移植并修改」的已在接口层面适配本插件现有的 `_execute_action` / `get_group_setting` / `_mute_member` 等基建，但检测逻辑本身保持移植自原项目：
 
 | 方法 | 分类 | 说明 |
 |------|------|------|
