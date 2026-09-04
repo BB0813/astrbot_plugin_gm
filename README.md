@@ -4,7 +4,9 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-插件-green.svg)](https://github.com/Snowyyu/AstrBot)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-red.svg)](LICENSE)
 
-> 本项目采用 **AGPL-3.0** 许可证，是基于网络分发（Bot / 服务器场景）的**主动选择**：以服务器形式对外提供功能的项目，AGPL 要求部署方开放修改后的源码，与 QQ 群管 Bot 的部署形态契合。本插件的违规检测模块移植自 MIT 许可证的 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)，见 [NOTICE](NOTICE)。
+> 本项目采用 **AGPL-3.0** 许可证，是基于网络分发（Bot / 服务器场景）的**主动选择**：以服务器形式对外提供功能的项目，AGPL 要求部署方开放修改后的源码，与 QQ 群管 Bot 的部署形态契合。本插件的违规检测模块移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（同为 AGPL-3.0），见 [NOTICE](NOTICE)。
+>
+> **⚠️ AGPL §13 网络服务条款：以服务器 / 机器人形式对外提供修改后版本，须向交互方开放修改后全部源码。Fork 与二次分发请审慎评估并遵守 AGPL 全部条款。**
 
 ---
 #注∶在插件配置设置完会设置为默认信息，即为全局配置
@@ -343,7 +345,7 @@ A: 配置 `join_request_notify_in_group true` 后，新申请会发到群内；�
 ### 撤回相关
 
 **Q: `/撤回 N` 提示不支持？**
-A: 当前 OneBot 实现不支持 `get_group_msg_history` 且本地历史为空，请改用「引用消息 + /撤回」。
+A: 基于 OneBot v11 协议，当前实现不支持 `get_group_msg_history` 且本地历史为空，请改用「引用消息 + /撤回」。
 
 **Q: 超过 2 分钟的消息撤不回？**
 A: OneBot `delete_msg` 只能撤回约 2 分钟内的消息，超时会静默失败。
@@ -384,11 +386,11 @@ astrbot_plugin_gm/
 
 ## 致谢与第三方代码说明
 
-本插件整合了以下优秀插件的功能。其中**六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）的检测逻辑与 API 调用代码移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT License）**，已按其许可证要求保留来源声明；其余插件仅为功能设计参考：
+本插件整合了以下优秀插件的功能。其中**六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）的检测逻辑与 API 调用代码移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（AGPL-3.0，与本插件同许可证）**，已按其许可证要求保留来源声明；其余插件仅为功能设计参考：
 
-- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（MIT）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广），详见 [NOTICE](NOTICE)
-- [GroupManager](https://github.com/mjy1113451/group_manager)（AGPL-v3）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）。**⚠️ 依据 AGPL-v3 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，须以 AGPL-v3 释出整个衍生项目**
-- [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian) —— **功能对齐**：踢人撤回历史（#145），未复用其代码，自行实现
+- [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（AGPL-3.0）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广），详见 [NOTICE](NOTICE)
+- [GroupManager](https://github.com/BB0813/astrbot_pulgin_group_manager)（AGPL-3.0）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）。**⚠️ 依据 AGPL-3.0 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，复用部分须继续以 AGPL-3.0 释出**
+- [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian)（MIT）—— **功能对齐**：踢人撤回历史（#145），未复用其代码，自行实现
 
 感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的强大插件框架！
 ---

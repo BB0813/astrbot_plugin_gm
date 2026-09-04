@@ -1,13 +1,13 @@
 # Third-Party Notices
 
-本插件包含对以下第三方开源项目的代码移植（MIT License 兼容）。依照 MIT License 要求保留此声明：
+本插件整合了以下第三方开源项目的代码与功能设计。依照各上游许可证要求，保留来源声明。
 
-## astrbot_plugin_group_moderation
+## astrbot_plugin_group_moderation（代码移植）
 
 - 项目主页：https://github.com/huangzuan-dev/astrbot_plugin_group_moderation
-- 许可证：MIT License
-- 声明：本插件（astrbot_plugin_gm）中的「群违规检测」模块（图片 AI 审核 / 刷屏 / 骂人 / 广告 / 链接 / 群号推广的检测逻辑与 OpenAI 兼容 API 调用）移植自该项目代码，并按 MIT License 保留来源声明。
-- MIT License 全文：https://opensource.org/licenses/MIT
+- 许可证：**AGPL-3.0**（上游 LICENSE 文件为 GNU Affero General Public License v3.0；其 README 中「MIT License」字样与 LICENSE 文件不一致，以 LICENSE 文件为准）
+- 声明：本插件（astrbot_plugin_gm）中的「群违规检测」模块（图片 AI 审核 / 刷屏 / 骂人 / 广告 / 链接 / 群号推广的检测逻辑与 OpenAI 兼容 API 调用）移植自该项目代码。**本项目本身采用 AGPL-3.0，与上游同许可证，因此移植代码随本项目以 AGPL-3.0 释出，完全兼容，无需转换许可证。**
+- 许可证全文：https://opensource.org/licenses/AGPL-3.0
 
 ### 移植代码清单（main.py，按「移植 / 移植并修改 / 独立实现」标注）
 
@@ -31,31 +31,30 @@
 
 其余辅助逻辑（`_record_violation` / `_is_user_whitelisted` / `_moderation_admin_bypass` / `_moderation_ban_duration` 及全部 `_*_cmd` 命令方法）为本插件独立实现，未复用原项目代码。
 
-### MIT License（引用）
+### AGPL-3.0 通知（上游要求的声明）
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-其余功能（加群申请自动审核参考自 GroupManager、踢人撤回历史参考自 astrbot_plugin_group_guardian）均为独立实现，未复用其代码，仅为设计参考。
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## GroupManager（仅设计参考，代码禁止复用）
 
-- 项目主页：https://github.com/mjy1113451/group_manager
-- 许可证：**AGPL-v3**
-- **⚠️ 重要声明：GroupManager 采用 AGPL-v3 许可证。本插件未复用其任何代码 —— 包括正则片段、关键词匹配逻辑、任何源码片段 —— 仅参考了其公开文档中描述的功能设计（加群申请自动审核：违禁词拒绝 / 关键词同意 / 群内人工审核流程）。本插件中的加群审核功能为完全独立实现。**
-- 若未来任何版本复用其代码，整个衍生项目将必须以 AGPL-v3 释出；当前版本不涉及。
+- 项目主页：https://github.com/BB0813/astrbot_pulgin_group_manager
+- 许可证：**AGPL-3.0**
+- **⚠️ 重要声明：GroupManager 采用 AGPL-3.0 许可证。本插件未复用其任何代码 —— 包括正则片段、关键词匹配逻辑、任何源码片段 —— 仅参考了其公开文档中描述的功能设计（加群申请自动审核：违禁词拒绝 / 关键词同意 / 群内人工审核流程）。本插件中的加群审核功能为完全独立实现。**
+- 若未来任何版本复用其代码，复用部分及其衍生必须继续以 AGPL-3.0 释出；当前版本不涉及任何复用。
+
+## astrbot_plugin_group_guardian（仅功能对齐，未复用代码）
+
+- 项目主页：https://github.com/zcj-ui/astrbot_plugin_group_guardian
+- 许可证：**MIT License**
+- 声明：踢人撤回历史（#145）功能仅为设计对齐，未复用其代码，故无需代码层面的 MIT 版权声明。
