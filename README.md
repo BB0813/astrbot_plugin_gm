@@ -196,7 +196,7 @@ pip install astrbot_plugin_group_admin
 按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
 
-### 图片 AI 审核配置（移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)）
+### 图片 AI 审核配置
 
 图片违规检测使用 OpenAI 兼容的视觉 API，需在插件配置中填写：
 
@@ -243,7 +243,7 @@ pip install astrbot_plugin_group_admin
 - 若 OneBot 实现不支持 `get_group_msg_history` 且本地历史也为空，则提示改用「引用消息」撤回。
 - 本地历史仅记录进程启动后经过监听的消息，重启前历史不可恢复。
 
-**踢人清历史（#145，对齐 [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian)）**：
+**踢人清历史**：
 
 - 配置 `kick_recall_enabled=true` 后，执行 `/踢 @某人` 会自动撤回被踢成员最近 `kick_recall_count`（默认 10，最多 50）条消息（踢出前完成，因为踢出后无法再拉取其历史）。
 - 新增 `/清用户历史 @某人 [N]`：单独执行清历史，不踢人。
