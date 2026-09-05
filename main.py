@@ -40,7 +40,7 @@ def _parse_qq_list(text: str) -> list:
     "https://github.com/mjy1113451/astrbot_plugin_gm"
 )
 class GroupAdminPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config=None):
         super().__init__(context)
         try:
             from astrbot.api.star import StarTools
@@ -55,6 +55,22 @@ class GroupAdminPlugin(Star):
         self.stats_path = self.data_dir / "stats.json"
         self.reports_path = self.data_dir / "reports.json"
         self.config = self.load_config()
+        # 合并 AstrBot 框架注入的 WebUI 配置（修复 #180）。
+        # AstrBot star_manager 会尝试以 config=<AstrBotConfig> 实例化插件；旧版插件
+        # __init__ 不接收该参数，会被框架 except 退回只传 context，导致 WebUI 面板配置
+        # 全部失效（如 mute_notice=False 不生效）。本插件接收后：
+        #   - AstrBotConfig 是 dict 子类，直接取其键值；
+        #   - 全局键以 WebUI 注入为准（WebUI 才能改全局配置，本地 config.json 的全局键
+        #     只是历史默认值兜底），group_overrides（按群覆盖）保留本地。
+        if config is not None:
+            ui_config = config if isinstance(config, dict) else {}
+            local_overrides = (self.config.get("group_overrides") or {}).copy()
+            self.config.update(ui_config)
+            if local_overrides:
+                self.config["group_overrides"] = {
+                    **self.config.get("group_overrides", {}),
+                    **local_overrides,
+                }
         self.stats = self.load_json(self.stats_path, {"groups": {}})
         self.reports = self.load_json(self.reports_path, {"pending": []})
         self._msg_save_counter = 0  # #152：发言计数批量持久化计数器
@@ -2501,7 +2517,8 @@ class GroupAdminPlugin(Star):
         ok = await self._mute_member(event, group_id, qq, duration)
         if ok:
             await self._record_mute_and_maybe_kick(event, group_id, qq, sender_id)
-        yield event.plain_result("已鞭尸" if ok else "鞭尸失败")
+        if self._should_notify_mute(ok):
+            yield event.plain_result("已鞭尸" if ok else "鞭尸失败")
 
     @filter.command("排名", "查看本群发言排名")
     async def rank_cmd(self, event: AstrMessageEvent):
