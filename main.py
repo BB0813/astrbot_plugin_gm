@@ -1597,32 +1597,56 @@ class GroupAdminPlugin(Star):
                 return True
         return False
 
+    @staticmethod
+    def _normalize_host(raw_host: str) -> str:
+        """归一化域名：去端口、去 www. 前缀、小写。"""
+        h = raw_host.split(":")[0].lower().strip(".")
+        if h.startswith("www."):
+            h = h[4:]
+        return h
+
     def _is_link_whitelisted(self, msg_text: str, group_id: str) -> bool:
-        """#195：检查消息中的链接是否命中白名单（全局+按群）。命中则不触发链接检测。"""
+        """#195：检查消息中的链接是否命中白名单（全局+按群）。命中则不触发链接检测。
+        匹配规则：精确域名匹配（已做归一化去端口/去 www./小写）。
+        白名单条目支持通配前缀 `*.example.com` 表示匹配该域及其所有子域。"""
         if not msg_text:
             return False
-        # 提取消息中所有域名/host
-        urls = re.findall(r"https?://([^\s/]+)|www\.([^\s/]+)", msg_text, re.IGNORECASE)
+        # 提取消息中所有链接的 hostname（用 urlparse 兼容带端口/路径的 URL）
+        from urllib.parse import urlparse
         hosts = set()
-        for m in urls:
-            for g in m:
-                if g:
-                    h = g.lower().split("/")[0].lstrip("www.")
-                    hosts.add(h)
+        for url_match in re.finditer(r"https?://[^\s]+", msg_text, re.IGNORECASE):
+            url = url_match.group(0)
+            parsed = urlparse(url)
+            if parsed.hostname:
+                hosts.add(self._normalize_host(parsed.hostname))
+        # 也匹配裸 www.example.com（无协议前缀）
+        for www_match in re.finditer(r"(?:^|\s)www\.[^\s]+", msg_text, re.IGNORECASE):
+            url = www_match.group(0).strip()
+            parsed = urlparse("http://" + url)
+            if parsed.hostname:
+                hosts.add(self._normalize_host(parsed.hostname))
         if not hosts:
             return False
-        # 全局白名单
-        global_wl = set(
-            str(x).lower().split("/")[0].lstrip("www.")
-            for x in (self.config.get("link_whitelist", []) or [])
-        )
-        # 按群白名单
-        group_wl = set(
-            str(x).lower().split("/")[0].lstrip("www.")
-            for x in (self.get_group_setting(group_id, "link_whitelist", []) or [])
-        )
-        all_wl = global_wl | group_wl
-        return bool(hosts & all_wl)
+        # 构建归一化白名单集合（精确条目 + 通配条目分开）
+        raw_global = self.config.get("link_whitelist", []) or []
+        raw_group = self.get_group_setting(group_id, "link_whitelist", []) or []
+        exact_wl = set()
+        wildcard_wl = set()  # 通配域名（去掉 *. 前缀）
+        for entry in list(raw_global) + list(raw_group):
+            e = self._normalize_host(str(entry))
+            if e.startswith("*."):
+                wildcard_wl.add(e[2:])  # "*.example.com" → "example.com"
+            else:
+                exact_wl.add(e)
+        # 精确匹配
+        if hosts & exact_wl:
+            return True
+        # 通配匹配：host 以 ".suffix" 结尾或等于 suffix
+        for host in hosts:
+            for domain in wildcard_wl:
+                if host == domain or host.endswith("." + domain):
+                    return True
+        return False
 
     async def _check_link(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
         if not self.get_group_setting(group_id, "link_check_enabled", False):
