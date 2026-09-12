@@ -99,7 +99,7 @@ class GroupAdminPlugin(Star):
             logger.warning(
                 "[IMPORTANT][群管插件] enabled_groups 为空：按 #192 新语义，违规检测"
                 "（含刷屏/图片AI等）将在【全部群】启用。如需限定范围，请配置 "
-                "enabled_groups 列表或在群内 /设置群配置 enabled_groups false 关闭指定群。"
+                "enabled_groups 列表，或通过 group_overrides 将指定群 enabled_groups 设为 false。"
             )
         if not _ar_ag:
             logger.warning(
@@ -192,6 +192,8 @@ class GroupAdminPlugin(Star):
             ],
             "link_check_enabled": False,
             "link_ban_duration": 600,
+            "link_whitelist": [],  # #195：全局链接白名单（host 列表，命中不检测/撤回/禁言）
+            "blacklisted_users": [],  # #194：黑名单 QQ 列表（按群覆盖，命中自动拒绝加群）
             "group_promotion_check_enabled": True,
             "group_promotion_ban_duration": 600,
             "ban_duration": 600,
@@ -694,7 +696,16 @@ class GroupAdminPlugin(Star):
         "添加广告关键词", "删除广告关键词", "查看广告关键词",
         "添加插件管理", "删除插件管理", "添加头衔管理", "删除头衔管理",
         "添加管理管理", "删除管理管理", "添加踢人管理", "删除踢人管理",
-        "设置群配置", "查看群配置", "清除群配置", "群违规检测状态",
+        "查看群配置", "清除群配置", "群违规检测状态",
+        "开关撤回提示", "开关禁言提示", "开关踢人拒加", "开关管理员豁免",
+        "开关违规通知", "开关加群申请提醒", "开关加群自动审核",
+        "开关踢人清历史", "开关语音检测",
+        "设置排名人数", "设置踢人阈值", "设置消息历史条数", "设置踢人清条数", "设置拒绝理由",
+        "添加自动撤回关键词", "删除自动撤回关键词", "查看自动撤回关键词",
+        "添加举报通知QQ", "删除举报通知QQ", "查看举报通知QQ",
+        "添加加群通知QQ", "删除加群通知QQ", "查看加群通知QQ",
+        "添加链接白名单", "删除链接白名单", "查看链接白名单",
+        "添加黑名单", "删除黑名单", "查看黑名单",
         "设管理", "取消管理", "头衔",
         "别人昵称", "改群昵称", "群昵称", "禁言", "禁言列表", "解禁", "踢", "清用户历史", "鞭尸",
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
@@ -1602,10 +1613,40 @@ class GroupAdminPlugin(Star):
                 return True
         return False
 
+    def _is_link_whitelisted(self, msg_text: str, group_id: str) -> bool:
+        """#195：检查消息中的链接是否命中白名单（全局+按群）。命中则不触发链接检测。"""
+        if not msg_text:
+            return False
+        # 提取消息中所有域名/host
+        urls = re.findall(r"https?://([^\s/]+)|www\.([^\s/]+)", msg_text, re.IGNORECASE)
+        hosts = set()
+        for m in urls:
+            for g in m:
+                if g:
+                    h = g.lower().split("/")[0].lstrip("www.")
+                    hosts.add(h)
+        if not hosts:
+            return False
+        # 全局白名单
+        global_wl = set(
+            str(x).lower().split("/")[0].lstrip("www.")
+            for x in (self.config.get("link_whitelist", []) or [])
+        )
+        # 按群白名单
+        group_wl = set(
+            str(x).lower().split("/")[0].lstrip("www.")
+            for x in (self.get_group_setting(group_id, "link_whitelist", []) or [])
+        )
+        all_wl = global_wl | group_wl
+        return bool(hosts & all_wl)
+
     async def _check_link(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
         if not self.get_group_setting(group_id, "link_check_enabled", False):
             return False
         if not msg_text:
+            return False
+        # #195：链接白名单命中则跳过
+        if self._is_link_whitelisted(msg_text, group_id):
             return False
         pattern = r"(https?://[^\s]+|www\.[^\s]+\.[^\s]+|[^\s]+\.(com|cn|net|org|io|xyz|top|vip|cc|me|tv|edu|gov)[^\s]*)"
         return re.search(pattern, msg_text, re.IGNORECASE) is not None
@@ -1664,7 +1705,7 @@ class GroupAdminPlugin(Star):
             f"API Key: {'已配置' if self.config.get('api_key') else '未配置'}\n"
             f"模型: {self.config.get('model_name', 'gpt-4o')}\n"
             f"\n"
-            f"监控群组: {enabled_groups if enabled_groups else '全部（需在群内启用 /设置群配置 enabled_groups true）'}\n"
+            f"监控群组: {enabled_groups if enabled_groups else '全部（留空=全群启用）'}\n"
             f"\n"
             f"【禁言时长（秒）】\n"
             f"图片: {self.config.get('ban_duration', 600)}\n"
@@ -2051,7 +2092,125 @@ class GroupAdminPlugin(Star):
         more = f"\n…还有 {len(kws) - 20} 个" if len(kws) > 20 else ""
         yield event.plain_result(f"本群广告关键词（{len(kws)} 个）：\n{head}{more}")
 
-    async def _edit_special_admins(self, event: AstrMessageEvent, target: str, key: str, label: str, add: bool):
+    # ===================== 链接白名单（#195，按群） =====================
+
+    @filter.command("添加链接白名单", "添加链接白名单域名（按群生效）")
+    async def add_link_whitelist_cmd(self, event: AstrMessageEvent, domain: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        group_id = self._get_group_id_or_none(event)
+        if not group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        domain = (domain or "").strip().lower().split("/")[0].lstrip("www.")
+        if not domain:
+            yield event.plain_result("[错误] 请提供域名，例如：example.com")
+            return
+        wl = self._get_group_override_list(group_id, "link_whitelist")
+        if domain in [str(x).lower().split("/")[0].lstrip("www.") for x in wl]:
+            yield event.plain_result(f"[错误] 域名 '{domain}' 已在本群白名单中")
+            return
+        wl.append(domain)
+        self.save_config()
+        yield event.plain_result(f"[成功] 已添加本群链接白名单 '{domain}'（当前 {len(wl)} 个）")
+
+    @filter.command("删除链接白名单", "从链接白名单移除域名（按群生效）")
+    async def remove_link_whitelist_cmd(self, event: AstrMessageEvent, domain: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        group_id = self._get_group_id_or_none(event)
+        if not group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        domain = (domain or "").strip().lower().split("/")[0].lstrip("www.")
+        if not domain:
+            yield event.plain_result("[错误] 请提供域名")
+            return
+        wl = self._get_group_override_list(group_id, "link_whitelist")
+        norm = [str(x).lower().split("/")[0].lstrip("www.") for x in wl]
+        if domain not in norm:
+            yield event.plain_result(f"[错误] 域名 '{domain}' 不在本群白名单中")
+            return
+        wl.remove(wl[norm.index(domain)])
+        self.save_config()
+        yield event.plain_result(f"[成功] 已从本群链接白名单移除 '{domain}'（当前 {len(wl)} 个）")
+
+    @filter.command("查看链接白名单", "查看链接白名单（本群+全局）")
+    async def list_link_whitelist_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        group_id = self._get_group_id_or_none(event)
+        if not group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        group_wl = self.get_group_setting(group_id, "link_whitelist", [])
+        global_wl = self.config.get("link_whitelist", [])
+        lines = []
+        if group_wl:
+            lines.append(f"本群链接白名单（{len(group_wl)} 个）：")
+            lines.extend([f"  {i+1}. {d}" for i, d in enumerate(group_wl)])
+        if isinstance(global_wl, list) and global_wl:
+            lines.append(f"全局链接白名单（{len(global_wl)} 个）：")
+            lines.extend([f"  {i+1}. {d}" for i, d in enumerate(global_wl)])
+        if not lines:
+            yield event.plain_result("本群与全局链接白名单均为空")
+            return
+        yield event.plain_result("\n".join(lines))
+
+    # ===================== 群黑名单（#194，按群） =====================
+
+    @filter.command("添加黑名单", "将用户加入本群黑名单（拒绝加群申请）")
+    async def add_blacklist_cmd(self, event: AstrMessageEvent, target: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        group_id = self._get_group_id_or_none(event)
+        if not group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        raw = self._get_raw_message(event)
+        qq_list = self._extract_at_qqs(raw if isinstance(raw, dict) else {}) or _parse_qq_list(target)
+        if not qq_list:
+            yield event.plain_result("请通过 @某人 或QQ号指定目标")
+            return
+        bl = self._get_group_override_list(group_id, "blacklisted_users")
+        added = [qq for qq in qq_list if qq not in [str(x) for x in bl] and (bl.append(qq) or True)]
+        self.save_config()
+        yield event.plain_result(f"[成功] 已拉黑 {len(added)} 人到本群黑名单（当前 {len(bl)} 人）" if added else "[提示] 所选用户已在本群黑名单中")
+
+    @filter.command("删除黑名单", "将用户从本群黑名单移除")
+    async def remove_blacklist_cmd(self, event: AstrMessageEvent, target: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        group_id = self._get_group_id_or_none(event)
+        if not group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        raw = self._get_raw_message(event)
+        qq_list = self._extract_at_qqs(raw if isinstance(raw, dict) else {}) or _parse_qq_list(target)
+        if not qq_list:
+            yield event.plain_result("请通过 @某人 或QQ号指定目标")
+            return
+        bl = self._get_group_override_list(group_id, "blacklisted_users")
+        removed = [qq for qq in qq_list if qq in [str(x) for x in bl] and bl.remove(qq) is None]
+        self.save_config()
+        yield event.plain_result(f"[成功] 已从本群黑名单移除 {len(removed)} 人" if removed else "[提示] 所选用户不在本群黑名单中")
+
+    @filter.command("查看黑名单", "查看本群黑名单")
+    async def list_blacklist_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        group_id = self._get_group_id_or_none(event)
+        if not group_id:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        bl = self.get_group_setting(group_id, "blacklisted_users", [])
+        if not bl:
+            yield event.plain_result("本群黑名单为空")
+            return
+        listing = "\n".join([f"{i+1}. {u}" for i, u in enumerate(bl)])
+        yield event.plain_result(f"本群黑名单（{len(bl)} 人）：\n{listing}")
+
+    async def _edit_special_admins(self, event, target: str, key: str, label: str, add: bool):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
             yield event.plain_result("此指令只能在群聊中使用")
@@ -3179,7 +3338,7 @@ class GroupAdminPlugin(Star):
         if not md5:
             yield event.plain_result("下载图片失败，无法计算 MD5")
             return
-        # 写入本群覆盖（统一走 _get_group_override_list，与 /设置群配置 同一持久化入口）
+        # 写入本群覆盖（统一走 _get_group_override_list）
         banned = self._get_group_override_list(group_id, "banned_images")
         if md5 in banned:
             yield event.plain_result("该图片已在本群违禁列表中")
@@ -3270,67 +3429,240 @@ class GroupAdminPlugin(Star):
             return
         yield event.plain_result("\n".join(lines))
 
-    # ===================== 状态查看 =====================
+    # ===================== 状态查看（#193：独立指令替代 /设置群配置） =====================
 
-    # #74: 设置群配置（仅插件管理员）
-    @filter.command("设置群配置", "为本群覆盖插件配置项：/设置群配置 <key> <value>")
-    async def set_group_config_cmd(self, event: AstrMessageEvent, key: str = "", value: str = ""):
+    # --- Bool 开关指令 ---
+    @filter.command("开关撤回提示", "开关撤回消息提示（on/off，按群生效）")
+    async def toggle_recall_notice_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "show_recall_notice", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群撤回提示已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关禁言提示", "开关禁言/解禁回复结果（on/off，按群生效）")
+    async def toggle_mute_notice_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "mute_notice", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群禁言提示已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关踢人拒加", "开关踢人后拒绝重新加群（on/off，按群生效）")
+    async def toggle_reject_re_add_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "reject_re_add", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群踢人拒加已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关管理员豁免", "开关管理员/群主跳过违规检测（on/off，按群生效）")
+    async def toggle_admin_bypass_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "admin_bypass", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群管理员豁免已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关违规通知", "开关违规时群内通知（on/off，按群生效）")
+    async def toggle_notify_on_violation_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "notify_on_violation", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群违规通知已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关加群申请提醒", "开关加群申请群内通知提醒（on/off，按群生效）")
+    async def toggle_join_notify_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "join_request_notify_in_group", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群加群申请提醒已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关加群自动审核", "开关加群申请自动审核总开关（on/off，按群生效）")
+    async def toggle_join_audit_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "join_audit_enabled", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群加群自动审核已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关踢人清历史", "开关踢人时自动撤回消息（on/off，按群生效）")
+    async def toggle_kick_recall_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "kick_recall_enabled", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群踢人清历史已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    @filter.command("开关语音检测", "开关语音消息转文字违规检测（on/off，按群生效）")
+    async def toggle_voice_check_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        self._set_group_override(gid, "voice_check_enabled", value.lower() not in ("off", "false", "0", "关", "关闭"))
+        yield event.plain_result(f"[成功] 本群语音检测已设为 {'开启' if value.lower() not in ('off','false','0','关','关闭') else '关闭'}")
+
+    # --- Int 设置指令 ---
+    @filter.command("设置排名人数", "设置发言排名榜显示人数（按群生效）")
+    async def set_rank_top_n_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        try: n = int(value)
+        except (ValueError, TypeError): yield event.plain_result("[错误] 请提供数字，例如：/设置排名人数 10"); return
+        if n < 1: yield event.plain_result("[错误] 必须大于0"); return
+        self._set_group_override(gid, "rank_top_n", n)
+        yield event.plain_result(f"[成功] 本群排名人数已设为 {n}")
+
+    @filter.command("设置踢人阈值", "设置禁言次数达阈值自动踢出（0=关闭，按群生效）")
+    async def set_mute_kick_threshold_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        try: n = int(value)
+        except (ValueError, TypeError): yield event.plain_result("[错误] 请提供数字，例如：/设置踢人阈值 3"); return
+        if n < 0: yield event.plain_result("[错误] 必须>=0"); return
+        self._set_group_override(gid, "mute_kick_threshold", n)
+        yield event.plain_result(f"[成功] 本群踢人阈值已设为 {'关闭' if n == 0 else f'{n}次'}")
+
+    @filter.command("设置消息历史条数", "设置撤回消息历史缓存条数（按群生效）")
+    async def set_max_history_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        try: n = int(value)
+        except (ValueError, TypeError): yield event.plain_result("[错误] 请提供数字，例如：/设置消息历史条数 50"); return
+        if n < 10: yield event.plain_result("[错误] 必须>=10"); return
+        self._set_group_override(gid, "max_message_history", n)
+        yield event.plain_result(f"[成功] 本群消息历史条数已设为 {n}")
+
+    @filter.command("设置踢人清条数", "设置踢人时自动撤回消息条数（按群生效）")
+    async def set_kick_recall_count_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        try: n = int(value)
+        except (ValueError, TypeError): yield event.plain_result("[错误] 请提供数字，例如：/设置踢人清条数 10"); return
+        if n < 1 or n > 50: yield event.plain_result("[错误] 范围 1-50"); return
+        self._set_group_override(gid, "kick_recall_count", n)
+        yield event.plain_result(f"[成功] 本群踢人清条数已设为 {n}")
+
+    # --- String 设置指令 ---
+    @filter.command("设置拒绝理由", "设置加群申请自动拒绝理由（按群生效）")
+    async def set_reject_reason_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: return
+        if not value: yield event.plain_result("[错误] 请提供理由，例如：/设置拒绝理由 请填写真实信息"); return
+        self._set_group_override(gid, "join_reject_reason", value)
+        yield event.plain_result(f"[成功] 本群拒绝理由已设为「{value}」")
+
+    # --- List 增删查指令 ---
+    @filter.command("添加自动撤回关键词", "添加Bot发言自动撤回关键词（按群生效）")
+    async def add_auto_recall_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        kw = (keyword or "").strip()
+        if not kw: yield event.plain_result("[错误] 请提供关键词"); return
+        kws = self._get_group_override_list(gid, "auto_recall_keywords")
+        if kw in kws: yield event.plain_result(f"[错误] 关键词 '{kw}' 已存在"); return
+        kws.append(kw); self.save_config()
+        yield event.plain_result(f"[成功] 已添加本群自动撤回关键词 '{kw}'（当前 {len(kws)} 个）")
+
+    @filter.command("删除自动撤回关键词", "删除Bot发言自动撤回关键词（按群生效）")
+    async def remove_auto_recall_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        kw = (keyword or "").strip()
+        if not kw: yield event.plain_result("[错误] 请提供关键词"); return
+        kws = self._get_group_override_list(gid, "auto_recall_keywords")
+        if kw not in kws: yield event.plain_result(f"[错误] 关键词 '{kw}' 不存在"); return
+        kws.remove(kw); self.save_config()
+        yield event.plain_result(f"[成功] 已删除本群自动撤回关键词 '{kw}'（当前 {len(kws)} 个）")
+
+    @filter.command("查看自动撤回关键词", "查看Bot发言自动撤回关键词列表（本群+全局）")
+    async def list_auto_recall_keywords_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        g = self.get_group_setting(gid, "auto_recall_keywords", [])
+        gl = self.config.get("auto_recall_keywords", [])
+        lines = []
+        if g: lines.extend([f"本群（{len(g)} 个）："] + [f"  {i+1}. {kw}" for i, kw in enumerate(g)])
+        if isinstance(gl, list) and gl: lines.extend([f"全局（{len(gl)} 个）："] + [f"  {i+1}. {kw}" for i, kw in enumerate(gl)])
+        yield event.plain_result("\n".join(lines) if lines else "本群与全局均无自动撤回关键词")
+
+    @filter.command("添加举报通知QQ", "添加接收举报通知的管理员QQ（按群生效）")
+    async def add_report_notify_cmd(self, event: AstrMessageEvent, target: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
         raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        group_id = str(raw.get("group_id"))
-        if not self._is_authorized(raw, str(raw.get("user_id"))):
-            yield event.plain_result("只有插件管理员可执行此操作")
-            return
-        if not key:
-            yield event.plain_result(
-                "用法：/设置群配置 <key> <value>\n"
-                "示例：/设置群配置 show_recall_notice false\n"
-                "      /设置群配置 rank_top_n 20\n"
-                "\n"
-                "支持 key（按群覆盖）：\n"
-                "show_recall_notice（撤回消息发送提示，bool）\n"
-                "mute_notice（禁言/解禁回复结果，bool）\n"
-                "reject_re_add（踢人后拒绝再次加群，bool）\n"
-                "auto_recall_keywords（Bot发言自动撤回关键词，list）\n"
-                "auto_recall_enabled_groups（启用自动撤回的群ID，list；留空=全群启用）\n"
-                "rank_top_n（发言排名显示人数，int）\n"
-                "report_notify_admins（接收举报通知的QQ，list）\n"
-                "join_approve_keywords（加群自动同意关键词，list）\n"
-                "join_notify_admins（加群请求通知QQ，list）\n"
-                "join_request_notify_in_group（群内提醒加群申请，bool）\n"
-                "join_reject_reason（自动拒绝加群理由，string）\n"
-                "join_audit_enabled（加群申请自动审核总开关，bool）\n"
-                "enabled_groups（违规检测启用，bool/true/false；全局列表留空=全群启用）\n"
-                "title_admins（可设置头衔的QQ，list）\n"
-                "group_admin_admins（可设群管的QQ，list）\n"
-                "kick_admins（可踢人的QQ，list）\n"
-                "kick_recall_enabled（踢人撤回历史，bool）\n"
-                "kick_recall_count（踢人撤回条数，int 1-50）\n"
-                "max_message_history（撤回历史缓存条数，int）\n"
-                "voice_check_enabled（语音违规检测开关，bool）\n"
-                "whitelist_users（违规检测白名单，list）\n"
-                "notify_on_violation（违规时群内通知，bool）\n"
-                "\n详细列表与说明见 _conf_schema.json 中各字段的 description。"
-            )
-            return
-        # 类型转换
-        parsed_value: object = value
-        if value.lower() in ("true", "false"):
-            parsed_value = (value.lower() == "true")
-        elif value.isdigit():
-            parsed_value = int(value)
-        elif value.startswith("[") and value.endswith("]"):
-            try:
-                parsed_value = json.loads(value)
-            except Exception:
-                parsed_value = [v.strip() for v in value.strip("[]").split(",") if v.strip()]
-        overrides = self.config.setdefault("group_overrides", {})
-        gconf = overrides.setdefault(group_id, {})
-        gconf[key] = parsed_value
+        qq_list = self._extract_at_qqs(raw if isinstance(raw, dict) else {}) or _parse_qq_list(target)
+        if not qq_list: yield event.plain_result("请通过 @某人 或QQ号指定目标"); return
+        ql = self._get_group_override_list(gid, "report_notify_admins")
+        added = [q for q in qq_list if q not in [str(x) for x in ql] and (ql.append(q) or True)]
         self.save_config()
-        yield event.plain_result(f"已为本群设置 {key} = {parsed_value}")
+        yield event.plain_result(f"[成功] 已添加 {len(added)} 人（当前 {len(ql)} 人）" if added else "[提示] 所选QQ已在列表中")
+
+    @filter.command("删除举报通知QQ", "删除接收举报通知的管理员QQ（按群生效）")
+    async def remove_report_notify_cmd(self, event: AstrMessageEvent, target: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        raw = self._get_raw_message(event)
+        qq_list = self._extract_at_qqs(raw if isinstance(raw, dict) else {}) or _parse_qq_list(target)
+        if not qq_list: yield event.plain_result("请通过 @某人 或QQ号指定目标"); return
+        ql = self._get_group_override_list(gid, "report_notify_admins")
+        removed = [q for q in qq_list if q in [str(x) for x in ql] and (ql.remove(q) or True)]
+        self.save_config()
+        yield event.plain_result(f"[成功] 已删除 {len(removed)} 人" if removed else "[提示] 所选QQ不在列表中")
+
+    @filter.command("查看举报通知QQ", "查看本群接收举报通知的管理员QQ列表")
+    async def list_report_notify_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        ql = self.get_group_setting(gid, "report_notify_admins", [])
+        yield event.plain_result(f"本群举报通知QQ：{', '.join(ql) if ql else '空'}")
+
+    @filter.command("添加加群通知QQ", "添加加群请求通知管理员QQ（按群生效）")
+    async def add_join_notify_cmd(self, event: AstrMessageEvent, target: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        raw = self._get_raw_message(event)
+        qq_list = self._extract_at_qqs(raw if isinstance(raw, dict) else {}) or _parse_qq_list(target)
+        if not qq_list: yield event.plain_result("请通过 @某人 或QQ号指定目标"); return
+        ql = self._get_group_override_list(gid, "join_notify_admins")
+        added = [q for q in qq_list if q not in [str(x) for x in ql] and (ql.append(q) or True)]
+        self.save_config()
+        yield event.plain_result(f"[成功] 已添加 {len(added)} 人（当前 {len(ql)} 人）" if added else "[提示] 所选QQ已在列表中")
+
+    @filter.command("删除加群通知QQ", "删除加群请求通知管理员QQ（按群生效）")
+    async def remove_join_notify_cmd(self, event: AstrMessageEvent, target: str = ""):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        raw = self._get_raw_message(event)
+        qq_list = self._extract_at_qqs(raw if isinstance(raw, dict) else {}) or _parse_qq_list(target)
+        if not qq_list: yield event.plain_result("请通过 @某人 或QQ号指定目标"); return
+        ql = self._get_group_override_list(gid, "join_notify_admins")
+        removed = [q for q in qq_list if q in [str(x) for x in ql] and (ql.remove(q) or True)]
+        self.save_config()
+        yield event.plain_result(f"[成功] 已删除 {len(removed)} 人" if removed else "[提示] 所选QQ不在列表中")
+
+    @filter.command("查看加群通知QQ", "查看本群加群请求通知管理员QQ列表")
+    async def list_join_notify_cmd(self, event: AstrMessageEvent):
+        if not await self._moderation_require_admin_msg(event): return
+        gid = self._get_group_id_or_none(event)
+        if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
+        ql = self.get_group_setting(gid, "join_notify_admins", [])
+        yield event.plain_result(f"本群加群通知QQ：{', '.join(ql) if ql else '空'}")
 
     @filter.command("查看群配置", "查看本群生效的配置覆盖")
     async def view_group_config_cmd(self, event: AstrMessageEvent):
@@ -3429,16 +3761,22 @@ class GroupAdminPlugin(Star):
                 if msg_text:
                     approve = "同意" in msg_text
                     deny = "拒绝" in msg_text
-                    if approve or deny:
-                        # #129: 拒绝时支持自定义理由（从 "拒绝 理由" 中提取）
+                    blacklist = "拉黑" in msg_text
+                    if approve or deny or blacklist:
+                        # #129: 拒绝时支持自定义理由；#194: 拉黑 = 拒绝 + 加入群黑名单
                         reject_reason = "管理员审核"
-                        if deny:
+                        if blacklist:
+                            reject_reason = "拉黑"
+                            bl_list = self._get_group_override_list(group_id, "blacklisted_users")
+                            if info["user_id"] not in [str(x) for x in bl_list]:
+                                bl_list.append(info["user_id"])
+                        elif deny:
                             parts = msg_text.split("拒绝", 1)
                             custom = parts[1].strip() if len(parts) > 1 else ""
                             reject_reason = custom if custom else self.get_group_setting(
                                 group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
                         await self._handle_group_request(event, info["flag"], approve, reject_reason)
-                        result = "同意" if approve else "拒绝"
+                        result = "拉黑" if blacklist else ("同意" if approve else "拒绝")
                         # 清理已处理的记录
                         del pending[str(reply_id)]
                         self.save_config()
@@ -3498,6 +3836,19 @@ class GroupAdminPlugin(Star):
                 enabled = ("*" in sx_list or "all" in sx_list
                            or group_id in [str(x) for x in enabled_groups])
 
+            # #194：黑名单用户直接拒绝（无需检查关键词/门禁）
+            bl_list = self.get_group_setting(group_id, "blacklisted_users", [])
+            if bl_list and str(user_id) in [str(x) for x in bl_list]:
+                await self._handle_group_request(event, flag, False, "黑名单用户")
+                yield event.plain_result(f"已拒绝 {user_id} 的加群申请（黑名单用户）")
+                await self._notify_admins(
+                    f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
+                    f"验证消息: {comment}\n"
+                    f"原因: 黑名单用户",
+                    group_id=group_id,
+                )
+                return
+
             # 命中违禁词：拒绝 + 通知管理员（#129 使用自定义拒绝理由；#159 优化提示）
             reject_reason = self.get_group_setting(group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
             if enabled and violation_keywords and any(kw in comment for kw in violation_keywords):
@@ -3548,7 +3899,7 @@ class GroupAdminPlugin(Star):
                     f"用户qq号：{user_id}\n"
                     f"qq等级：{level or '未知'}\n"
                     f"加群验证消息：{comment or '无'}\n"
-                    f"回复 /同意 或 /拒绝（引用本消息）"
+                    f"回复 /同意 或 /拒绝 或 /拉黑（引用本消息）"
                 )
                 # 暂存 flag 等待引用回复
                 sent_id = await self._send_group_text(event, group_id, notify_text)

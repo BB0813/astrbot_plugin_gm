@@ -110,7 +110,7 @@
         "type": "dict",
         "invisible": true,
         "items": {},
-        "hint": "内部存储（#192 owner：WebUI 不展示）。由群内 /设置群配置 与各管理指令（禁言时长/关键词/白名单等）自动维护，按群覆盖功能不受影响。",
+        "hint": "按群覆盖配置（内部存储，由群内独立指令维护，#193 已移除 /设置群配置）。可用 key 包括：show_recall_notice、mute_notice、reject_re_add、auto_recall_keywords、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、join_reject_reason、join_audit_enabled、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、link_whitelist（#195）、group_promotion_*、ban_duration、whitelist_users、blacklisted_users（#194）、admin_bypass、notify_on_violation、max_message_history、kick_recall_enabled、kick_recall_count、voice_check_enabled、banned_images。语音转文字相关配置（voice_check_provider_id、voice_asr_endpoint/api_key/model、voice_check_timeout）为全局配置，不支持按群覆盖。save_config 直接序列化整个 config dict，group_overrides 下所有 key 均完整持久化。",
         "default": {}
     },
     "api_type": {
@@ -257,6 +257,20 @@
         "type": "int",
         "hint": "推荐按群覆盖。",
         "default": 600
+    },
+    "link_whitelist": {
+        "description": "全局链接白名单域名列表（命中不触发链接检测/撤回/禁言）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "推荐按群覆盖：在群内 /添加链接白名单 domain 增加本群白名单。域名自动去 www 前缀和统一小写。",
+        "default": []
+    },
+    "blacklisted_users": {
+        "description": "全局黑名单QQ号列表（命中自动拒绝加群申请）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "推荐按群覆盖：在群内 /添加黑名单 @某人 按群拉黑。拉黑用户再次申请加群时自动拒绝。",
+        "default": []
     },
     "group_promotion_check_enabled": {
         "description": "启用群号推广检测",

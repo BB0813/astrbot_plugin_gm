@@ -57,14 +57,52 @@
 
 > ⚠️ 违禁图检测基于 MD5 比对，仅能阻止原图二次传播。攻击者对图片做轻微改动（裁剪/压缩/加噪）会绕过。建议作为快速预筛，主防御仍依赖 AI 鉴图。
 
-### 按群覆盖配置
+### 按群覆盖配置（#193）
+
+每项按群配置都有独立指令（#193 已移除 `/设置群配置`），覆盖值写入 `group_overrides`，优先级高于全局配置：
+
+| 命令 | 说明 |
+|------|------|
+| `/开关撤回提示 on/off` | 撤回操作群内提示（show_recall_notice） |
+| `/开关禁言提示 on/off` | 禁言/解禁结果回复（mute_notice） |
+| `/开关踢人拒加 on/off` | 踢人后拒绝再次加群（reject_re_add） |
+| `/开关管理员豁免 on/off` | 管理员违规豁免（admin_bypass） |
+| `/开关违规通知 on/off` | 违规群内通知（notify_on_violation） |
+| `/开关加群申请提醒 on/off` | 加群申请群内提醒（join_request_notify_in_group） |
+| `/开关加群自动审核 on/off` | 加群自动审核总开关（join_audit_enabled） |
+| `/开关踢人清历史 on/off` | 踢人时撤回历史消息（kick_recall_enabled） |
+| `/开关语音检测 on/off` | 语音转文字违规检测（voice_check_enabled） |
+| `/设置排名人数 N` | 发言排名显示人数（rank_top_n，≥1） |
+| `/设置踢人阈值 N` | 刷屏禁言转踢人的阈值（mute_kick_threshold，≥0） |
+| `/设置消息历史条数 N` | 本地撤回消息缓存条数（max_message_history，≥10） |
+| `/设置踢人清条数 N` | 踢人撤回消息条数（kick_recall_count，1-50） |
+| `/设置拒绝理由 理由` | 加群自动拒绝理由（join_reject_reason） |
+| `/添加自动撤回关键词 词` / `/删除自动撤回关键词 词` / `/查看自动撤回关键词` | 自动撤回关键词（按群） |
+| `/添加举报通知QQ QQ` / `/删除举报通知QQ QQ` / `/查看举报通知QQ` | 举报结果通知管理员（按群） |
+| `/添加加群通知QQ QQ` / `/删除加群通知QQ QQ` / `/查看加群通知QQ` | 加群申请处理结果通知管理员（按群） |
+| `/查看群配置` | 查看本群生效的配置覆盖 |
+| `/清除群配置` | 清除本群所有覆盖 |
+| `/status` | 查看插件配置 |
+
+### 链接白名单（#195）
 
 | 命令 | 所需权限 | 说明 |
 |------|---------|------|
-| `/设置群配置 <key> <value>` | 插件管理员 | 为本群覆盖插件配置项（如 `enabled_groups true`） |
-| `/查看群配置` | 插件管理员 | 查看本群生效的配置覆盖 |
-| `/清除群配置` | 插件管理员 | 清除本群所有覆盖 |
-| `/status` | 插件管理员 | 查看插件配置 |
+| `/添加链接白名单 域名` | 插件管理员 | 添加本群链接白名单域名（按群覆盖，如 `example.com`） |
+| `/删除链接白名单 域名` | 插件管理员 | 从本群链接白名单移除域名 |
+| `/查看链接白名单` | 插件管理员 | 查看本群 + 全局链接白名单 |
+
+> 命中白名单域名的链接不参与链接违规检测（不撤回、不禁言）。全局白名单通过 WebUI `link_whitelist` 配置，本群白名单通过指令维护。
+
+### 群黑名单（#194）
+
+| 命令 | 所需权限 | 说明 |
+|------|---------|------|
+| `/添加黑名单 @某人或QQ号` | 插件管理员 | 将用户加入本群黑名单 |
+| `/删除黑名单 @某人或QQ号` | 插件管理员 | 从本群黑名单移除用户 |
+| `/查看黑名单` | 插件管理员 | 查看本群黑名单列表 |
+
+> 黑名单为**按群**生效：黑名单用户申请加群时自动拒绝；在群内加群提醒消息上引用回复 `/拉黑` 可一步完成「拒绝申请 + 加入黑名单」。
 
 ### 群违规检测
 
@@ -98,7 +136,7 @@
 
 1. **违禁词自动拒绝**：申请验证消息命中 `violation_keywords` → 自动拒绝，并按 `join_reject_reason` 给出理由
 2. **关键词自动同意**：验证消息命中 `join_approve_keywords` → 自动同意，并在该群发送通知「该用户触碰到加群审核通过词语，已自动同意！」（#186）
-3. **群内提醒人工审核**：`join_request_notify_in_group=true` 时，申请信息发到群内（含昵称/QQ号/QQ等级/验证消息），管理员**引用回复「同意」或「拒绝 [理由]」**即可完成审核（#189）
+3. **群内提醒人工审核**：`join_request_notify_in_group=true` 时，申请信息发到群内（含昵称/QQ号/QQ等级/验证消息），管理员**引用回复「同意」或「拒绝 [理由]」或「拉黑」**即可完成审核（#189/#194）；回复「拉黑」= 拒绝申请 + 将该用户加入本群黑名单，此后其再次申请自动拒绝
 4. **管理员私聊通知**：处理结果推送给 `join_notify_admins` 列表中的 QQ
 
 ```
@@ -112,8 +150,7 @@
 
 ```
 /添加加群审核通过关键词 学生
-/设置群配置 join_approve_keywords ["学生", "老师"]
-/设置群配置 join_reject_reason "请填写真实验证信息"
+/设置拒绝理由 请填写真实验证信息
 ```
 
 > 常用验证思路：学习群放行「学生 / 老师 / 手机号」，工作群放行「部门 / 工号」，兴趣群放行兴趣关键词；对已知可信用户，用违禁词反向拦截（只拒不可信内容）往往比逐个列白名单更高效。
@@ -142,9 +179,9 @@ pip install astrbot_plugin_group_admin
 
 ## 配置
 
-插件提供以下可配置项（在 AstrBot 配置文件中设置，或在群内用 `/设置群配置` 按群覆盖）：
+插件提供以下可配置项（在 AstrBot 配置文件 / WebUI 中设置，或用上方「按群覆盖配置」的独立指令按群覆盖）：
 
-> ⚠️ **默认行为变更（#192，务必阅读）**：`enabled_groups` 与 `auto_recall_enabled_groups` **留空 = 全部群启用**（违规检测含刷屏/图片AI等将在所有群生效；Bot 发言命中关键词即自动撤回）。升级前若依赖旧版「留空=不启用」语义，请显式配置这两个列表限定范围，或在不需要的群内 `/设置群配置 enabled_groups false`。启动日志有对应告警提示。
+> ⚠️ **默认行为变更（#192，务必阅读）**：`enabled_groups` 与 `auto_recall_enabled_groups` **留空 = 全部群启用**（违规检测含刷屏/图片AI等将在所有群生效；Bot 发言命中关键词即自动撤回）。升级前若依赖旧版「留空=不启用」语义，请显式配置这两个列表限定范围，或在不需要的群内通过 `group_overrides` 将 `enabled_groups` 设为 false。启动日志有对应告警提示。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
@@ -161,6 +198,8 @@ pip install astrbot_plugin_group_admin
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
+| `link_whitelist` | list | `[]` | 全局链接白名单域名列表（#195，命中不检测/撤回/禁言；本群白名单用 `/添加链接白名单` 维护） |
+| `blacklisted_users` | list | `[]` | 按群黑名单 QQ 列表（#194，存于 `group_overrides`，用 `/添加黑名单` 维护；黑名单用户加群自动拒绝） |
 | `voice_check_enabled` | bool | `false` | 启用语音消息转文字违规检测（#128；可按群覆盖） |
 | `voice_check_provider_id` | string | `""` | AstrBot 内置 STT provider ID（#128；留空用当前激活 provider；**全局配置**） |
 | `voice_asr_endpoint` | string | `""` | 独立 ASR API 端点（#128；可选兜底；**全局配置**） |
@@ -187,12 +226,28 @@ pip install astrbot_plugin_group_admin
 /设置图片禁言时长 300          # 本群图片违规禁言 300 秒
 /添加骂人关键词 笨蛋           # 本群骂人关键词
 /添加白名单用户 123456         # 本群白名单
-/设置群配置 rank_top_n 20      # 其它配置仍可用 /设置群配置 按群覆盖
+/开关违规通知 on
+/添加自动撤回关键词 测试
+/设置排名人数 20
+```
+
+或在配置文件中直接编辑 `group_overrides`：
+
+```json
+{
+  "group_overrides": {
+    "123456789": {
+      "enabled_groups": true,
+      "rank_top_n": 20,
+      "auto_recall_keywords": ["测试", "敏感词"]
+    }
+  }
+}
 ```
 
 按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
-> `group_overrides` 内部存储项不再展示在 WebUI 配置页（#192 owner），按群覆盖功能不受影响，仍由 `/设置群配置` 与各管理指令维护。
+> `group_overrides` 内部存储项不再展示在 WebUI 配置页（#192 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护。
 
 ### 图片 AI 审核配置
 
@@ -264,7 +319,7 @@ pip install astrbot_plugin_group_admin
 |------|------|------|
 | 违禁词自动拒绝 | `enabled_groups` + `violation_keywords` | 命中违禁词自动拒绝（#129）；`enabled_groups` 留空 = 全群启用（#192） |
 | 关键词自动同意 | `join_approve_keywords` | 验证消息命中关键词自动同意 |
-| 群内提醒管理员 | `join_request_notify_in_group = true` | 申请消息发送到群内，引用回复同意/拒绝（#57） |
+| 群内提醒管理员 | `join_request_notify_in_group = true` | 申请消息发送到群内，引用回复同意/拒绝/拉黑（#57/#194） |
 | 自定义拒绝理由 | `join_reject_reason` / 引用回复「拒绝 理由」 | 默认"不满足加群条件"，可按群覆盖 |
 | 拒绝原因详细化 | 内置（#159） | 违禁词命中时提示「您的加群申请有词触碰到本群违禁词，自动拒绝」 |
 | 自动审核总开关 | `join_audit_enabled` | 关闭后跳过所有自动审核（#155） |
@@ -282,9 +337,9 @@ pip install astrbot_plugin_group_admin
 1. **插件管理员**：拥有使用所有管理命令的权限。识别方式：
    - QQ 群管理员
    - QQ 群主
-2. **专项权限管理员**：`group_admin_admins`（可设/取消群管理）等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。`title_admins`、`kick_admins` 不再提供 WebUI 全局配置项（#188），仍支持按群覆盖：`/设置群配置 title_admins ["QQ"]`、`/设置群配置 kick_admins ["QQ"]`。
+2. **专项权限管理员**：`group_admin_admins`（可设/取消群管理）等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。`title_admins`、`kick_admins` 不再提供 WebUI 全局配置项（#188），仍支持按群覆盖（在 `group_overrides` 中配置 `title_admins` / `kick_admins` 列表）。
 
-`group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（群内 `/设置群配置`，优先级更高）。
+`group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高）。
 
 > 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
 
@@ -323,14 +378,15 @@ pip install astrbot_plugin_group_admin
 # 修改自己的群昵称
 /改昵称 新名字
 
-# 本群独立启用违规检测
-/设置群配置 enabled_groups true
+# 本群独立启用违规检测（在配置文件 group_overrides 或 WebUI 中设置）
+# /开关违规通知 on
+/开关语音检测 on
 
 # 自怼（禁言自己 60 分钟）
 /禁我 60
 
 # 加群申请：设置自动同意关键词
-/设置群配置 join_approve_keywords ["学生"]
+/添加加群审核通过关键词 学生
 
 # 违规检测：添加骂人关键词
 /添加骂人关键词 笨蛋
@@ -343,7 +399,7 @@ pip install astrbot_plugin_group_admin
 ### 违规检测相关
 
 **Q: 消息没有被撤回？**
-A: ① 确认机器人有群管理员权限（撤回 + 禁言都需要）；② 检查该群是否已启用检测（`/设置群配置 enabled_groups true`）；③ 检查日志中是否有撤回相关输出。
+A: ① 确认机器人有群管理员权限（撤回 + 禁言都需要）；② 检查该群是否已启用检测（`enabled_groups`，可用 `*` 表示全部群）；③ 检查日志中是否有撤回相关输出。
 
 **Q: 图片检测没有反应？**
 A: 检查 `api_endpoint` / `api_key` / `model_name` 是否已配置，日志中应有 `[群违规检测] 检测到 X 张图片` 的输出；未配置 API 时图片审核会静默跳过。
@@ -417,7 +473,8 @@ astrbot_plugin_gm/
 本插件整合了以下优秀插件的功能。其中**六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）的检测逻辑与 API 调用代码移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（AGPL-3.0，与本插件同许可证）**，已按其许可证要求保留来源声明；其余插件仅为功能设计参考。以下许可证结论均经 [NOTICE](NOTICE) 逐一核实，以上游 LICENSE 文件为准（上游 README 自述与 LICENSE 文件不一致时，以 LICENSE 文件为准）：
 
 - [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（AGPL-3.0）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广），详见 [NOTICE](NOTICE)
-- [GroupManager](https://github.com/BB0813/astrbot_pulgin_group_manager)（AGPL-3.0）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）。**⚠️ 依据 AGPL-3.0 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，复用部分须继续以 AGPL-3.0 释出**
+
+**⚠️ 依据 AGPL-3.0 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，复用部分须继续以 AGPL-3.0 释出**
 - [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian)（MIT）—— **功能对齐**：踢人撤回历史（#145），未复用其代码，自行实现
 
 感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的强大插件框架！
