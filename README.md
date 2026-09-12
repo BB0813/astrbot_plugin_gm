@@ -468,7 +468,8 @@ astrbot_plugin_gm/
 本插件整合了以下优秀插件的功能。其中**六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广）的检测逻辑与 API 调用代码移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（AGPL-3.0，与本插件同许可证）**，已按其许可证要求保留来源声明；其余插件仅为功能设计参考。以下许可证结论均经 [NOTICE](NOTICE) 逐一核实，以上游 LICENSE 文件为准（上游 README 自述与 LICENSE 文件不一致时，以 LICENSE 文件为准）：
 
 - [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（AGPL-3.0）—— **代码移植**：六大违规检测（图片 AI / 刷屏 / 骂人 / 广告 / 链接 / 群号推广），详见 [NOTICE](NOTICE)
-- [GroupManager](https://github.com/BB0813/astrbot_pulgin_group_manager)（AGPL-3.0）—— **设计参考**：加群申请自动审核（关键词同意 / 违禁词拒绝 / 群内人工审核）。**⚠️ 依据 AGPL-3.0 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，复用部分须继续以 AGPL-3.0 释出**
+
+**⚠️ 依据 AGPL-3.0 许可证，本项目未复用其任何代码（包括正则片段、匹配逻辑），仅参考其功能设计文档；如需复用其代码，复用部分须继续以 AGPL-3.0 释出**
 - [astrbot_plugin_group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian)（MIT）—— **功能对齐**：踢人撤回历史（#145），未复用其代码，自行实现
 
 感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供的强大插件框架！
