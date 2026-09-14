@@ -715,10 +715,10 @@ class GroupAdminPlugin(Star):
         "添加链接白名单", "删除链接白名单", "查看链接白名单",
         "添加黑名单", "删除黑名单", "查看黑名单",
         "设管理", "取消管理", "头衔",
-        "别人昵称", "改群昵称", "群昵称", "禁言", "禁言列表", "解禁", "踢", "清用户历史", "鞭尸",
+        "别人昵称", "改群昵称", "群昵称", "群友昵称", "自己昵称", "设群友昵称", "禁言", "禁言列表", "解禁", "踢", "清用户历史", "鞭尸",
         "设精", "取消设精", "改群头像", "宵禁", "解除宵禁", "禁我",
         "发群公告", "排名", "清除数据", "举报", "status",
-        "添加群待办", "取消群待办", "给我头衔", "加群申请待处理", "群信息", "群名称", "群标签", "群相册",
+        "添加群待办", "取消群待办", "给我头衔", "加群申请待处理", "群信息", "群名称", "群名", "群标签", "群相册",
         "添加违禁图片", "删除违禁图片", "查看违禁图片",
         "添加加群审核通过关键词", "删除加群审核通过关键词", "查看加群审核通过关键词",
     )
@@ -2408,8 +2408,8 @@ class GroupAdminPlugin(Star):
         ok = await self._set_group_title(event, group_id, target_qq, title)
         yield event.plain_result("设置头衔成功" if ok else "设置头衔失败")
 
-    # #18: 别人昵称 - 设置他人的群昵称
-    @filter.command("群友昵称", "设置他人群昵称（需要 @某人 + 新昵称）", alias={"别人昵称"})
+    # #18: 群友昵称 - 设置他人群昵称（owner 09-14：合并为单条命令；普通群管理员即可，不必插件管理员）
+    @filter.command("群友昵称", "设置他人群昵称（@某人 或 QQ号 + 新昵称；群管/群主/插件管理员）", alias={"别人昵称", "群昵称", "设群昵称", "设群友昵称"})
     async def set_other_card_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -2420,17 +2420,26 @@ class GroupAdminPlugin(Star):
         if not self.has_group_admin_rights(sender_id, group_id, raw):
             yield event.plain_result("只有插件管理员或群管理员可执行此操作")
             return
-        target_qq = self._extract_at_qq(raw)
-        if not target_qq:
-            yield event.plain_result("请通过 @某人 来指定对象")
-            return
         # 从原始消息提取所有 text 段拼接为 card（避免被 @ 组件挤掉）
         card = self._extract_text(raw).strip()
         # 去掉开头的命令名（如果存在）
-        for prefix in ("/群友昵称", "群友昵称", "/别人昵称", "别人昵称"):
+        for prefix in ("/群友昵称", "群友昵称", "/别人昵称", "别人昵称",
+                       "/设群友昵称", "设群友昵称", "/群昵称", "群昵称",
+                       "/设群昵称", "设群昵称"):
             if card.startswith(prefix):
                 card = card[len(prefix):].lstrip()
                 break
+        target_qq = self._extract_at_qq(raw)
+        if not target_qq:
+            # 支持直接给 QQ 号：首 token 为 QQ 则剥离，其余作为新昵称
+            toks = card.split(None, 1)
+            qq = self._parse_qq(toks[0]) if toks else None
+            if qq:
+                target_qq = qq
+                card = toks[1].strip() if len(toks) > 1 else ""
+        if not target_qq:
+            yield event.plain_result("请通过 @某人 或 QQ 号指定对象")
+            return
         if not card:
             yield event.plain_result("请提供新昵称内容")
             return
@@ -2829,27 +2838,6 @@ class GroupAdminPlugin(Star):
         ok = await self._mute_member(event, group_id, sender_id, minutes * 60)
         if self._should_notify_mute(group_id, ok):
             yield event.plain_result(f"已禁言自己 {minutes} 分钟" if ok else "禁言失败")
-
-    # #76: 群昵称 新昵称 - 插件管理员修改任意成员昵称
-    @filter.command("设群友昵称", "设置指定成员群昵称（仅插件管理员，支持 QQ 号）", alias={"群昵称", "设群昵称"})
-    async def set_member_card_cmd(self, event: AstrMessageEvent, target: str = "", card: str = ""):
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        group_id = str(raw.get("group_id"))
-        if not self._is_authorized(raw, str(raw.get("user_id"))):
-            yield event.plain_result("只有插件管理员可执行此操作")
-            return
-        qq = self._extract_at_qq(raw) or self._parse_qq(target)
-        if not qq:
-            yield event.plain_result("请通过 @某人 或提供QQ号")
-            return
-        if not card:
-            yield event.plain_result("请提供新昵称内容")
-            return
-        ok = await self._set_group_card(event, group_id, qq, card)
-        yield event.plain_result(f"已将 {qq} 群昵称设为 {card}" if ok else "设置群昵称失败")
 
     # #16: 群公告
     @filter.command("发群公告", "发送群公告")
