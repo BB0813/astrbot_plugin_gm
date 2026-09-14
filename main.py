@@ -15,6 +15,7 @@ import json
 import os
 import re  # 用于群相册命令前缀解析、编号提取等
 import time
+import threading
 import asyncio
 import base64
 import hashlib
@@ -25,6 +26,9 @@ try:
     import aiohttp
 except ImportError:
     aiohttp = None
+
+# 配置写入串行化锁（review#192 race-condition）：多条同步写路径共用，防止交错写坏文件
+_CFG_LOCK = threading.RLock()
 
 
 def _parse_qq_list(text: str) -> list:
@@ -237,7 +241,8 @@ class GroupAdminPlugin(Star):
         return default_config
 
     def save_config(self):
-        self.save_json(self.config_path, self.config)
+        with _CFG_LOCK:
+            self.save_json(self.config_path, self.config)
 
     def save_stats(self):
         self.save_json(self.stats_path, self.stats)
@@ -296,11 +301,14 @@ class GroupAdminPlugin(Star):
         self.save_config()
 
     def _get_group_id_or_none(self, event) -> str:
-        """从事件取群号；非群聊返回空串。"""
-        raw = self._get_raw_message(event)
-        if not raw or not raw.get("group_id"):
+        """从事件取群号；非群聊返回空串。review#192：raw 访问异常统一兜底为空串。"""
+        try:
+            raw = self._get_raw_message(event)
+            if not raw or not raw.get("group_id"):
+                return ""
+            return str(raw.get("group_id"))
+        except Exception:
             return ""
-        return str(raw.get("group_id"))
 
     def _add_group_override_admins(self, group_id: str, key: str, qq_list: list) -> list:
         admins = self._get_group_override_list(group_id, key)
@@ -2401,7 +2409,7 @@ class GroupAdminPlugin(Star):
         yield event.plain_result("设置头衔成功" if ok else "设置头衔失败")
 
     # #18: 别人昵称 - 设置他人的群昵称
-    @filter.command("别人昵称", "设置他人群昵称（需要 @某人 + 新昵称）")
+    @filter.command("群友昵称", "设置他人群昵称（需要 @某人 + 新昵称）", alias={"别人昵称"})
     async def set_other_card_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -2418,8 +2426,8 @@ class GroupAdminPlugin(Star):
             return
         # 从原始消息提取所有 text 段拼接为 card（避免被 @ 组件挤掉）
         card = self._extract_text(raw).strip()
-        # 去掉开头的 /别人昵称 命令名（如果存在）
-        for prefix in ("/别人昵称", "别人昵称"):
+        # 去掉开头的命令名（如果存在）
+        for prefix in ("/群友昵称", "群友昵称", "/别人昵称", "别人昵称"):
             if card.startswith(prefix):
                 card = card[len(prefix):].lstrip()
                 break
@@ -2429,8 +2437,8 @@ class GroupAdminPlugin(Star):
         ok = await self._set_group_card(event, group_id, target_qq, card)
         yield event.plain_result(f"已将 {target_qq} 的群昵称设为 {card}" if ok else "设置群昵称失败")
 
-    # #18: 改群昵称 - 设置自己的群昵称
-    @filter.command("改群昵称", "设置自己的群昵称", alias={"改昵称"})
+    # #18: 改自己群昵称（owner 09-14：改自己昵称用「自己昵称」）
+    @filter.command("自己昵称", "设置自己的群昵称", alias={"改群昵称", "改昵称"})
     async def set_self_card_cmd(self, event: AstrMessageEvent, card: str = ""):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -2823,7 +2831,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result(f"已禁言自己 {minutes} 分钟" if ok else "禁言失败")
 
     # #76: 群昵称 新昵称 - 插件管理员修改任意成员昵称
-    @filter.command("群昵称", "设置指定成员群昵称（仅插件管理员）", alias={"设群昵称"})
+    @filter.command("设群友昵称", "设置指定成员群昵称（仅插件管理员，支持 QQ 号）", alias={"群昵称", "设群昵称"})
     async def set_member_card_cmd(self, event: AstrMessageEvent, target: str = "", card: str = ""):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -3243,7 +3251,7 @@ class GroupAdminPlugin(Star):
         )
 
 # #166: /群名称 — 修改本群名（群管/群主）
-    @filter.command("群名称", "修改本群名称（/群名称 新群名）", alias={"改群名", "修改群名"})
+    @filter.command("群名", "修改本群名称（/群名 新群名）", alias={"群名称", "改群名", "修改群名"})
     async def set_group_name_cmd(self, event: AstrMessageEvent):
         raw = self._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -3255,12 +3263,12 @@ class GroupAdminPlugin(Star):
             return
         group_id = str(raw.get("group_id"))
         text = self._extract_text(raw).strip()
-        for prefix in ("/群名称", "群名称"):
+        for prefix in ("/群名称", "/群名", "群名称", "群名"):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
         if not text:
-            yield event.plain_result("请提供新群名，例如 /群名称 我的群")
+            yield event.plain_result("请提供新群名，例如 /群名 我的群")
             return
         if len(text) > 60:
             yield event.plain_result("群名过长（最多60字符）")
