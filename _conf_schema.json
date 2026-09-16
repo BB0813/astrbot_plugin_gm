@@ -207,11 +207,24 @@
         "hint": "推荐按群覆盖。",
         "default": 600
     },
-    "profanity_keywords": {
-        "description": "骂人关键词列表（关键词模式下使用）",
+    "political_keywords": {
+        "description": "涉政关键词列表（全局硬清单，#204）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "推荐按群覆盖：/设置群配置 profanity_keywords [关键词列表]。",
+        "hint": "命中即撤回+按 political_ban_duration 禁言，并提示固定文案。仅全局配置。",
+        "default": []
+    },
+    "political_ban_duration": {
+        "description": "涉政禁言时长（分钟，全局，#204）",
+        "type": "int",
+        "hint": "指令：/设涉政禁言时长 <分钟>。",
+        "default": 600
+    },
+    "profanity_keywords": {
+        "description": "骂人关键词列表（关键词模式下使用，仅全局配置，#204 已移除按群指令）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "仅全局配置（#204 已移除添加/删除/查看骂人关键词指令）；关键词模式由 /切换骂人检测模式 控制。",
         "default": [
             "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
             "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
