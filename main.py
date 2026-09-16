@@ -145,6 +145,11 @@ class GroupAdminPlugin(Star):
             "auto_recall_enabled_groups": [],
             # 违规检测（#19）—— 兼容旧配置三项已删除（#192 owner）
             "violation_keywords": [],
+            # 旧兼容键默认值（review#192 breaking-change-default）：
+            # join_audit 等流程会读这些键，缺键时取 None 易抛 TypeError
+            "violation_action": "none",
+            "violation_mute_minutes": 10,
+            "violation_enabled_groups": [],
             # 举报（#21）
             "report_notify_admins": [],
             # 群公告与排名（#16, #29）
@@ -306,19 +311,23 @@ class GroupAdminPlugin(Star):
         return False
 
     def _get_group_override_list(self, group_id: str, key: str) -> list:
-        overrides = self.config.setdefault("group_overrides", {})
-        gconf = overrides.setdefault(str(group_id), {})
-        value = gconf.setdefault(key, [])
-        if not isinstance(value, list):
-            value = [value] if value else []
-            gconf[key] = value
-        return value
+        # review#192 race-condition：setdefault 首次创建也加锁，
+        # 避免并发首建同 (group_id,key) 产生多个空 list 互相覆盖；RLock 可重入
+        with _CFG_LOCK:
+            overrides = self.config.setdefault("group_overrides", {})
+            gconf = overrides.setdefault(str(group_id), {})
+            value = gconf.setdefault(key, [])
+            if not isinstance(value, list):
+                value = [value] if value else []
+                gconf[key] = value
+            return value
 
     def _set_group_override(self, group_id: str, key: str, value) -> None:
         """按群覆盖写入单个配置项并持久化（#192 owner：管理指令直接按群生效）。"""
-        overrides = self.config.setdefault("group_overrides", {})
-        overrides.setdefault(str(group_id), {})[key] = value
-        self.save_config()
+        with _CFG_LOCK:
+            overrides = self.config.setdefault("group_overrides", {})
+            overrides.setdefault(str(group_id), {})[key] = value
+            self.save_config()
 
     def _get_group_id_or_none(self, event) -> str:
         """从事件取群号；非群聊返回空串。review#192：raw 访问异常统一兜底为空串。"""
