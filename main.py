@@ -1151,34 +1151,25 @@ class GroupAdminPlugin(Star):
         """群是否启用违规检测。
         优先级
         1. group_overrides[gid]["enabled_groups"] 为 bool 时，按 bool 决定
-        2. top-level enabled_groups 列表：留空 = 全群启用（#192 owner）；
-           非空时包含 * / all 表示全部，包含群号表示启用
-        3. 迁移兼容：enabled_groups 与旧 violation_enabled_groups 均为空时才
-           全群启用；旧字段非空则按旧列表判定，老用户配置行为不漂移
-        4. review#192：monitor_global_enabled 总开关（默认 true）为显式保险丝，
-           false 时全部群禁用，不改变 owner 拍板的默认语义
+        2. top-level enabled_groups 列表：包含 * / all 表示全部；包含群号表示启用
+        3. 兼容旧 violation_enabled_groups 列表
+        4. owner 09-16 拍板：留空 = 不启用（安全默认）；启用需显式配置列表或按群 bool
         """
-        # review#192：总开关保险丝（默认 true）
-        if not self.config.get("monitor_global_enabled", True):
-            return False
         overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
         v = overrides.get("enabled_groups")
         if isinstance(v, bool):
             return v
         enabled = self.config.get("enabled_groups", []) or []
-        if enabled:
-            for x in enabled:
-                sx = str(x).lower()
-                if sx in ("*", "all"):
-                    return True
-                if str(x) == str(group_id):
-                    return True
+        if not enabled:
             return False
-        # #192 迁移兼容：新列表为空时回退旧字段，旧字段也非空才「留空=全群启用」
+        for x in enabled:
+            sx = str(x).lower()
+            if sx in ("*", "all"):
+                return True
+            if str(x) == str(group_id):
+                return True
         legacy = self.config.get("violation_enabled_groups", []) or []
-        if legacy:
-            return str(group_id) in [str(x) for x in legacy]
-        return True
+        return str(group_id) in [str(x) for x in legacy]
 
     def _is_user_whitelisted(self, group_id: str, user_id: str) -> bool:
         whitelist = self.get_group_setting(group_id, "whitelist_users", []) or []
@@ -3953,21 +3944,19 @@ class GroupAdminPlugin(Star):
                 is_bot=True, msg_time=raw.get("time"),
             )
 
-        # review#192：自动撤回总开关保险丝（默认 true；false = 全群禁用）
-        if not self.config.get("auto_recall_global_enabled", True):
-            return
         enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
         keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
-        # #192 owner：留空 = 全群启用；非空时 * / all 全启用，或精确匹配群号
-        # review#192 语义注明：『留空=全群启用』展开仅在 keywords 非空时有意义；
-        # keywords 为空时直接 return（自动撤回无触发条件），两个短路相互独立、勿合并
-        if not enabled:
+        # #170：兼容只配 keywords 未配 enabled_groups 的场景，配了关键词则默认全群启用
+        # owner 09-16：留空且无关键词 = 不启用（安全默认）
+        if not enabled and keywords:
             enabled = ["*"]
-        if not keywords:
+        if not enabled:
             return
         if "*" not in [str(x) for x in enabled] and "all" not in [str(x) for x in enabled]:
             if group_id not in [str(x) for x in enabled]:
                 return
+        if not keywords:
+            return
         msg_text = self._extract_text(raw)
         if not msg_text:
             return

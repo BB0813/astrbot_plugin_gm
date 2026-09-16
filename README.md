@@ -486,4 +486,4 @@ astrbot_plugin_gm/
 ## 命令与默认行为补充说明（review#192）
 
 - 命令别名：群友昵称（alias 别人昵称/群昵称/设群昵称/设群友昵称）、自己昵称（alias 改群昵称/改昵称）、群名（alias 群名称/改群名/修改群名）。若与 AstrBot 内置或其它插件同名指令冲突，请使用主名或停用冲突插件。
-- 默认行为：nabled_groups/uto_recall_enabled_groups 留空=全群启用（owner 拍板）；『留空=全群启用』展开仅在对应关键词列表非空时有意义。总开关 monitor_global_enabled/uto_recall_global_enabled 默认 true，设为 false 可一键全群禁用对应功能（显式保险丝）。
+- 默认行为（owner 09-16 拍板）：`enabled_groups` 留空 = 不启用；启用需显式配置列表（* / all / 群号）或按群 bool 覆盖。`auto_recall_enabled_groups` 留空且无关键词 = 不启用；配了关键词未配 enabled 时兼容全群启用（#170）。
