@@ -1527,15 +1527,32 @@ class GroupAdminPlugin(Star):
 
     # ----- 骂人检测 -----
 
+    def _collect_profanity_keywords(self, group_id: str) -> list:
+        """汇总骂人/违禁词关键词列表（review#208 config-coverage-regression）。
+
+        来源清单（扩展时勿遗漏）：
+        1. group_overrides[gid]["profanity_keywords"]（按群指令写入）
+        2. top-level config["profanity_keywords"]（全局默认；无按群覆盖时由 get_group_setting 返回）
+        3. 旧 config["violation_keywords"]（WebUI 历史入口，兼容保留）
+        """
+        kws = list(self.get_group_setting(group_id, "profanity_keywords", []) or [])
+        for src in (
+            self.config.get("profanity_keywords", []) or [],
+            self.config.get("violation_keywords", []) or [],
+        ):
+            for k in src:
+                if k not in kws:
+                    kws.append(k)
+        return kws
+
     async def _check_profanity(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
         if not self.get_group_setting(group_id, "profanity_check_enabled", True):
             return False
         if not msg_text:
             return False
         # #207：违禁词为硬清单，优先匹配且不受 AI 模式影响；
-        # 同时兼容旧全局配置 violation_keywords（WebUI 历史入口）
-        keywords = list(self.get_group_setting(group_id, "profanity_keywords", []) or [])
-        keywords += [k for k in (self.config.get("violation_keywords", []) or []) if k not in keywords]
+        # 来源统一由 _collect_profanity_keywords 收敛（按群/全局/旧 violation_keywords）
+        keywords = self._collect_profanity_keywords(group_id)
         text_lower = msg_text.lower()
         for kw in keywords:
             if str(kw).lower() and str(kw).lower() in text_lower:
