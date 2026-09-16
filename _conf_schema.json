@@ -31,6 +31,18 @@
         "hint": "留空 = 全部群启用自动撤回（#192）。非空时：包含 * 或 all 表示全部，或填写指定群号；推荐用 /设置群配置 auto_recall_enabled_groups true 按群开启。",
         "default": []
     },
+    "monitor_global_enabled": {
+        "description": "违规检测总开关（默认 true；false 时全部群禁用违规检测，作为『留空=全群启用』的显式保险丝）",
+        "type": "bool",
+        "hint": "review#192：显式总开关。默认 true 保持 owner 拍板语义（留空=全群启用）；设为 false 可一键禁用全部群的违规检测。",
+        "default": true
+    },
+    "auto_recall_global_enabled": {
+        "description": "Bot发言自动撤回总开关（默认 true；false 时全部群禁用自动撤回）",
+        "type": "bool",
+        "hint": "review#192：显式保险丝。默认 true 保持现有语义；设为 false 可一键禁用全部群的 Bot 发言自动撤回。",
+        "default": true
+    },
     "violation_action": {
         "description": "[已废弃] 违规处置动作（兼容旧配置，新流程已接管）",
         "type": "string",

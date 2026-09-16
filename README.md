@@ -481,3 +481,9 @@ astrbot_plugin_gm/
 ---
 
 > 本插件仅供学习与交流使用，请遵守 QQ / QQ 群的相关使用规范。
+
+
+## 命令与默认行为补充说明（review#192）
+
+- 命令别名：群友昵称（alias 别人昵称/群昵称/设群昵称/设群友昵称）、自己昵称（alias 改群昵称/改昵称）、群名（alias 群名称/改群名/修改群名）。若与 AstrBot 内置或其它插件同名指令冲突，请使用主名或停用冲突插件。
+- 默认行为：nabled_groups/uto_recall_enabled_groups 留空=全群启用（owner 拍板）；『留空=全群启用』展开仅在对应关键词列表非空时有意义。总开关 monitor_global_enabled/uto_recall_global_enabled 默认 true，设为 false 可一键全群禁用对应功能（显式保险丝）。

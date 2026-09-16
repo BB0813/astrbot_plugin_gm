@@ -244,6 +244,26 @@ class GroupAdminPlugin(Star):
         with _CFG_LOCK:
             self.save_json(self.config_path, self.config)
 
+    def _mutate_group_list(self, group_id: str, key: str, op: str, value: str) -> tuple:
+        """群 list 配置的原子读-改-写（review#192 race-condition）。
+
+        取列表→增/删→落盘 全程在 _CFG_LOCK 内串行化，避免并发覆盖丢失更新；
+        返回 (ok, 当前列表拷贝)。
+        """
+        with _CFG_LOCK:
+            lst = self._get_group_override_list(group_id, key)
+            if op == "add":
+                if any(str(x) == value for x in lst):
+                    return False, list(lst)
+                lst.append(value)
+            else:
+                target = next((x for x in list(lst) if str(x) == value), None)
+                if target is None:
+                    return False, list(lst)
+                lst.remove(target)
+            self.save_config()
+            return True, list(lst)
+
     def save_stats(self):
         self.save_json(self.stats_path, self.stats)
 
@@ -311,30 +331,32 @@ class GroupAdminPlugin(Star):
             return ""
 
     def _add_group_override_admins(self, group_id: str, key: str, qq_list: list) -> list:
-        admins = self._get_group_override_list(group_id, key)
-        added = []
-        for qq in qq_list:
-            qq = str(qq)
-            if qq and qq not in [str(x) for x in admins]:
-                admins.append(qq)
-                added.append(qq)
-        if added:
-            self.save_config()
-        return added
+        with _CFG_LOCK:
+            admins = self._get_group_override_list(group_id, key)
+            added = []
+            for qq in qq_list:
+                qq = str(qq)
+                if qq and qq not in [str(x) for x in admins]:
+                    admins.append(qq)
+                    added.append(qq)
+            if added:
+                self.save_config()
+            return added
 
     def _remove_group_override_admins(self, group_id: str, key: str, qq_list: list) -> list:
-        admins = self._get_group_override_list(group_id, key)
-        removed = []
-        for qq in qq_list:
-            qq = str(qq)
-            for item in list(admins):
-                if str(item) == qq:
-                    admins.remove(item)
-                    removed.append(qq)
-                    break
-        if removed:
-            self.save_config()
-        return removed
+        with _CFG_LOCK:
+            admins = self._get_group_override_list(group_id, key)
+            removed = []
+            for qq in qq_list:
+                qq = str(qq)
+                for item in list(admins):
+                    if str(item) == qq:
+                        admins.remove(item)
+                        removed.append(qq)
+                        break
+            if removed:
+                self.save_config()
+            return removed
 
     def has_title_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
         uid = str(user_id)
@@ -1133,7 +1155,12 @@ class GroupAdminPlugin(Star):
            非空时包含 * / all 表示全部，包含群号表示启用
         3. 迁移兼容：enabled_groups 与旧 violation_enabled_groups 均为空时才
            全群启用；旧字段非空则按旧列表判定，老用户配置行为不漂移
+        4. review#192：monitor_global_enabled 总开关（默认 true）为显式保险丝，
+           false 时全部群禁用，不改变 owner 拍板的默认语义
         """
+        # review#192：总开关保险丝（默认 true）
+        if not self.config.get("monitor_global_enabled", True):
+            return False
         overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
         v = overrides.get("enabled_groups")
         if isinstance(v, bool):
@@ -1793,12 +1820,10 @@ class GroupAdminPlugin(Star):
         if not keyword:
             yield event.plain_result("[错误] 请提供关键词")
             return
-        kws = self._get_group_override_list(group_id, "profanity_keywords")
-        if keyword in kws:
+        ok, kws = self._mutate_group_list(group_id, "profanity_keywords", "add", keyword)
+        if not ok:
             yield event.plain_result(f"[错误] 关键词 '{keyword}' 已存在")
             return
-        kws.append(keyword)
-        self.save_config()
         yield event.plain_result(f"[成功] 已添加本群骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
 
     @filter.command("删除骂人关键词", "删除骂人关键词（按群生效）")
@@ -1813,12 +1838,10 @@ class GroupAdminPlugin(Star):
         if not keyword:
             yield event.plain_result("[错误] 请提供关键词")
             return
-        kws = self._get_group_override_list(group_id, "profanity_keywords")
-        if keyword not in kws:
-            yield event.plain_result(f"[错误] 关键词 '{keyword}' 不存在（本群当前 {len(kws)} 个）")
+        ok, kws = self._mutate_group_list(group_id, "profanity_keywords", "remove", keyword)
+        if not ok:
+            yield event.plain_result(f"[错误] 关键词 '{keyword}' 不存在")
             return
-        kws.remove(keyword)
-        self.save_config()
         yield event.plain_result(f"[成功] 已删除本群骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
 
     @filter.command("查看骂人关键词", "查看骂人关键词列表（本群）")
@@ -3563,9 +3586,8 @@ class GroupAdminPlugin(Star):
         if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
         kw = (keyword or "").strip()
         if not kw: yield event.plain_result("[错误] 请提供关键词"); return
-        kws = self._get_group_override_list(gid, "auto_recall_keywords")
-        if kw in kws: yield event.plain_result(f"[错误] 关键词 '{kw}' 已存在"); return
-        kws.append(kw); self.save_config()
+        ok, kws = self._mutate_group_list(gid, "auto_recall_keywords", "add", kw)
+        if not ok: yield event.plain_result(f"[错误] 关键词 '{kw}' 已存在"); return
         yield event.plain_result(f"[成功] 已添加本群自动撤回关键词 '{kw}'（当前 {len(kws)} 个）")
 
     @filter.command("删除自动撤回关键词", "删除Bot发言自动撤回关键词（按群生效）")
@@ -3575,9 +3597,8 @@ class GroupAdminPlugin(Star):
         if not gid: yield event.plain_result("此指令只能在群聊中使用"); return
         kw = (keyword or "").strip()
         if not kw: yield event.plain_result("[错误] 请提供关键词"); return
-        kws = self._get_group_override_list(gid, "auto_recall_keywords")
-        if kw not in kws: yield event.plain_result(f"[错误] 关键词 '{kw}' 不存在"); return
-        kws.remove(kw); self.save_config()
+        ok, kws = self._mutate_group_list(gid, "auto_recall_keywords", "remove", kw)
+        if not ok: yield event.plain_result(f"[错误] 关键词 '{kw}' 不存在"); return
         yield event.plain_result(f"[成功] 已删除本群自动撤回关键词 '{kw}'（当前 {len(kws)} 个）")
 
     @filter.command("查看自动撤回关键词", "查看Bot发言自动撤回关键词列表（本群+全局）")
@@ -3932,9 +3953,14 @@ class GroupAdminPlugin(Star):
                 is_bot=True, msg_time=raw.get("time"),
             )
 
+        # review#192：自动撤回总开关保险丝（默认 true；false = 全群禁用）
+        if not self.config.get("auto_recall_global_enabled", True):
+            return
         enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
         keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
         # #192 owner：留空 = 全群启用；非空时 * / all 全启用，或精确匹配群号
+        # review#192 语义注明：『留空=全群启用』展开仅在 keywords 非空时有意义；
+        # keywords 为空时直接 return（自动撤回无触发条件），两个短路相互独立、勿合并
         if not enabled:
             enabled = ["*"]
         if not keywords:
@@ -3942,8 +3968,6 @@ class GroupAdminPlugin(Star):
         if "*" not in [str(x) for x in enabled] and "all" not in [str(x) for x in enabled]:
             if group_id not in [str(x) for x in enabled]:
                 return
-        if not keywords:
-            return
         msg_text = self._extract_text(raw)
         if not msg_text:
             return
