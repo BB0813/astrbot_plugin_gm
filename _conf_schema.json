@@ -31,6 +31,12 @@
         "hint": "留空则默认不启用自动撤回；推荐用 /设置群配置 auto_recall_enabled_groups true 按群开启。",
         "default": []
     },
+    "dup_face_recall_enabled": {
+        "description": "重复表情包自动撤回全局开关（#196，默认关）",
+        "type": "bool",
+        "hint": "开启后群内出现与近期相同的表情包（face id / 图片指纹）时自动撤回新消息。按群覆盖：/重复表情包撤回 开|关。",
+        "default": false
+    },
     "violation_action": {
         "description": "违规处置动作（兼容旧配置，新流程已接管）",
         "type": "string",
