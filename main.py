@@ -138,6 +138,8 @@ class GroupAdminPlugin(Star):
             "join_notify_admins": [],
             # 加群申请群内提醒（#57）
             "join_request_notify_in_group": False,
+            # #205：新人加群申请通知全局开关（默认开启）
+            "join_request_notify_enabled": True,
             "pending_join_requests": {},
             "join_reject_reason": "不满足加群条件",
             # #155：加群申请审核总开关（默认启用），支持按群覆盖
@@ -3794,12 +3796,14 @@ class GroupAdminPlugin(Star):
             if enabled and join_approve_keywords and any(kw in comment for kw in join_approve_keywords):
                 await self._handle_group_request(event, flag, True, "命中关键词自动同意")
                 yield event.plain_result(f"已同意 {user_id} 的加群申请（命中关键词）")
-                await self._notify_admins(
-                    f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
-                    f"验证消息: {comment}\n"
-                    f"原因: 命中关键词",
-                    group_id=group_id,
-                )
+                # #205：全局开关关闭时不发申请/审批通知
+                if self.config.get("join_request_notify_enabled", True):
+                    await self._notify_admins(
+                        f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
+                        f"验证消息: {comment}\n"
+                        f"原因: 命中关键词",
+                        group_id=group_id,
+                    )
                 # #186：命中加群审核通过关键词后，在该群发送通知
                 await self._send_group_text(
                     event, group_id,
@@ -3834,11 +3838,28 @@ class GroupAdminPlugin(Star):
                     pending = self.config.setdefault("pending_join_requests", {})
                     pending[str(sent_id)] = {"flag": flag, "group_id": group_id, "user_id": user_id}
                     self.save_config()
-                    await self._notify_admins(
-                        f"[加群请求] {user_id} 申请加入群 {group_id}\n"
-                        f"已在群内发送提醒，请管理员引用回复同意/拒绝",
-                        group_id=group_id,
-                    )
+                    # #205：全局开关关闭时不发管理员通知
+                    if self.config.get("join_request_notify_enabled", True):
+                        await self._notify_admins(
+                            f"[加群请求] {user_id} 申请加入群 {group_id}\n"
+                            f"已在群内发送提醒，请管理员引用回复同意/拒绝",
+                            group_id=group_id,
+                        )
+
+    @filter.command("新人加群申请通知", "开关新人加群申请通知（on/off，全局配置，#205）")
+    async def toggle_join_request_notify_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        v = (value or "").strip().lower()
+        if v in ("on", "true", "开", "开启"):
+            enabled = True
+        elif v in ("off", "false", "关", "关闭"):
+            enabled = False
+        else:
+            enabled = not bool(self.config.get("join_request_notify_enabled", True))
+        self.config["join_request_notify_enabled"] = enabled
+        self.save_config()
+        yield event.plain_result(f"[成功] 新人加群申请通知已{'开启' if enabled else '关闭'}（全局）")
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent):
