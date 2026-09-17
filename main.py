@@ -124,6 +124,9 @@ class GroupAdminPlugin(Star):
             "auto_recall_enabled_groups": [],
             # 违规检测（#19）
             "violation_keywords": [],
+            # #204：涉政关键词（全局）与涉政禁言时长（分钟）
+            "political_keywords": [],
+            "political_ban_duration": 600,
             "violation_action": "none",
             "violation_mute_minutes": 10,
             "violation_enabled_groups": [],
@@ -682,7 +685,7 @@ class GroupAdminPlugin(Star):
     _GM_COMMAND_NAMES = (
         "撤回自身", "撤回", "设置图片禁言时长", "设置刷屏禁言时长",
         "设置骂人禁言时长", "设置广告禁言时长", "设置链接禁言时长", "设置群号推广禁言时长",
-        "添加骂人关键词", "删除骂人关键词", "查看骂人关键词", "切换骂人检测模式",
+        "切换骂人检测模式", "设涉政禁言时长",
         "添加白名单用户", "删除白名单用户", "查看白名单", "查看违规统计",
         "添加广告关键词", "删除广告关键词", "查看广告关键词",
         "添加插件管理", "删除插件管理", "添加头衔管理", "删除头衔管理",
@@ -1220,6 +1223,18 @@ class GroupAdminPlugin(Star):
             return True
         # 2) 文本类检测
         if msg_text:
+            # #204：涉政关键词硬清单（全局配置），命中即撤回+按涉政时长禁言+固定提示
+            pol_kw = self._check_political(msg_text)
+            if pol_kw:
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                if mid:
+                    await self._recall_message(event, mid)
+                minutes = max(1, int(self.config.get("political_ban_duration", 600) or 600))
+                await self._mute_member(event, group_id, user_id, minutes * 60)
+                self._record_violation(group_id, user_id, "political")
+                await self._send(event, self._build_text(
+                    f"你因触碰涉政关键词(词语∶{pol_kw})被禁言{minutes}分钟"))
+                return True
             if await self._check_profanity(msg_text, event, group_id, user_id):
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
                 await self._handle_violation(event, "profanity", group_id, user_id, mid)
@@ -1529,6 +1544,20 @@ class GroupAdminPlugin(Star):
 
     # ----- 骂人检测 -----
 
+    def _check_political(self, msg_text: str) -> str:
+        """#204：涉政关键词命中检测（全局配置 political_keywords），返回命中词或空串。
+
+        涉政清单为硬清单：不受 AI 模式/管理员豁免影响前的文本检测顺序由 dispatch 保证。
+        """
+        if not msg_text:
+            return ""
+        text_lower = msg_text.lower()
+        for kw in self.config.get("political_keywords", []) or []:
+            k = str(kw).lower()
+            if k and k in text_lower:
+                return str(kw)
+        return ""
+
     def _collect_profanity_keywords(self, group_id: str) -> list:
         """汇总骂人/违禁词关键词列表（review#208 config-coverage-regression）。
 
@@ -1793,48 +1822,16 @@ class GroupAdminPlugin(Star):
         self.config["profanity_ban_duration"] = seconds
         yield event.plain_result(f"[成功] 骂人禁言时长已设置为 {seconds} 秒")
 
-    @filter.command("添加骂人关键词", "添加骂人关键词（关键词检测模式）")
-    async def add_profanity_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+    @filter.command("设涉政禁言时长", "设置涉政禁言时长（分钟，全局配置，#204）")
+    async def set_political_ban_duration_cmd(self, event: AstrMessageEvent, minutes: int = 0):
         if not await self._moderation_require_admin_msg(event):
             return
-        keyword = (keyword or "").strip()
-        if not keyword:
-            yield event.plain_result("[错误] 请提供关键词")
+        if minutes <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0")
             return
-        kws = self.config.setdefault("profanity_keywords", [])
-        if keyword in kws:
-            yield event.plain_result(f"[错误] 关键词 '{keyword}' 已存在")
-            return
-        kws.append(keyword)
-        self.config["profanity_keywords"] = kws
-        yield event.plain_result(f"[成功] 已添加骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
-
-    @filter.command("删除骂人关键词", "删除骂人关键词")
-    async def remove_profanity_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
-        if not await self._moderation_require_admin_msg(event):
-            return
-        keyword = (keyword or "").strip()
-        if not keyword:
-            yield event.plain_result("[错误] 请提供关键词")
-            return
-        kws = self.config.get("profanity_keywords", [])
-        if keyword not in kws:
-            yield event.plain_result(f"[错误] 关键词 '{keyword}' 不存在")
-            return
-        kws.remove(keyword)
-        self.config["profanity_keywords"] = kws
-        yield event.plain_result(f"[成功] 已删除骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
-
-    @filter.command("查看骂人关键词", "查看骂人关键词列表")
-    async def list_profanity_keywords_cmd(self, event: AstrMessageEvent):
-        if not await self._moderation_require_admin_msg(event):
-            return
-        kws = self.config.get("profanity_keywords", [])
-        if not kws:
-            yield event.plain_result("当前没有设置骂人关键词")
-            return
-        listing = "\n".join([f"{i+1}. {kw}" for i, kw in enumerate(kws)])
-        yield event.plain_result(f"骂人关键词列表（{len(kws)} 个）：\n{listing}")
+        self.config["political_ban_duration"] = minutes
+        self.save_config()
+        yield event.plain_result(f"[成功] 涉政禁言时长已设置为 {minutes} 分钟")
 
     @filter.command("切换骂人检测模式", "切换 AI 检测 / 关键词检测")
     async def toggle_profanity_mode_cmd(self, event: AstrMessageEvent):
