@@ -59,6 +59,8 @@ class GroupAdminPlugin(Star):
         self.stats_path = self.data_dir / "stats.json"
         self.reports_path = self.data_dir / "reports.json"
         self.config = self.load_config()
+        # #196：重复表情包检测的近期_seen 缓存（内存态，不持久化）
+        self._dup_face_seen: dict = {}
         # 合并 AstrBot 框架注入的 WebUI 配置（修复 #180）。
         # AstrBot star_manager 会尝试以 config=<AstrBotConfig> 实例化插件；旧版插件
         # __init__ 不接收该参数，会被框架 except 退回只传 context，导致 WebUI 面板配置
@@ -143,10 +145,15 @@ class GroupAdminPlugin(Star):
             # 关键词自动撤回（#46）
             "auto_recall_keywords": [],
             "auto_recall_enabled_groups": [],
-            # 违规检测（#19）—— 兼容旧配置三项已删除（#192 owner）
+            # #196：重复表情包自动撤回全局开关（默认关）
+            "dup_face_recall_enabled": False,
+            # 违规检测（#19）
             "violation_keywords": [],
             # 旧兼容键默认值（review#192 breaking-change-default）：
             # join_audit 等流程会读这些键，缺键时取 None 易抛 TypeError
+            # #204：涉政关键词（全局）与涉政禁言时长（分钟）
+            "political_keywords": [],
+            "political_ban_duration": 600,
             "violation_action": "none",
             "violation_mute_minutes": 10,
             "violation_enabled_groups": [],
@@ -161,6 +168,8 @@ class GroupAdminPlugin(Star):
             "join_notify_admins": [],
             # 加群申请群内提醒（#57）
             "join_request_notify_in_group": False,
+            # #205：新人加群申请通知全局开关（默认开启）
+            "join_request_notify_enabled": True,
             "pending_join_requests": {},
             "join_reject_reason": "不满足加群条件",
             # #155：加群申请审核总开关（默认启用），支持按群覆盖
@@ -730,7 +739,7 @@ class GroupAdminPlugin(Star):
     _GM_COMMAND_NAMES = (
         "撤回自身", "撤回", "设置图片禁言时长", "设置刷屏禁言时长",
         "设置骂人禁言时长", "设置广告禁言时长", "设置链接禁言时长", "设置群号推广禁言时长",
-        "添加骂人关键词", "删除骂人关键词", "查看骂人关键词", "切换骂人检测模式",
+        "切换骂人检测模式", "设涉政禁言时长",
         "添加白名单用户", "删除白名单用户", "查看白名单", "查看违规统计",
         "添加广告关键词", "删除广告关键词", "查看广告关键词",
         "添加插件管理", "删除插件管理", "添加头衔管理", "删除头衔管理",
@@ -1258,6 +1267,8 @@ class GroupAdminPlugin(Star):
         if self._is_user_whitelisted(group_id, user_id):
             return False
         if self._moderation_admin_bypass(group_id, raw):
+            # #199：管理员/群主豁免为默认行为；记录 debug 便于排查"未撤回"工单
+            logger.debug(f"[违规检测] 群 {group_id} 用户 {user_id} 命中管理员豁免，跳过检测")
             return False
         msg_text = self._extract_text(raw) if isinstance(raw, dict) else ""
         # 1) 刷屏（不依赖文本）
@@ -1267,6 +1278,18 @@ class GroupAdminPlugin(Star):
             return True
         # 2) 文本类检测
         if msg_text:
+            # #204：涉政关键词硬清单（全局配置），命中即撤回+按涉政时长禁言+固定提示
+            pol_kw = self._check_political(msg_text)
+            if pol_kw:
+                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                if mid:
+                    await self._recall_message(event, mid)
+                minutes = max(1, int(self.config.get("political_ban_duration", 600) or 600))
+                await self._mute_member(event, group_id, user_id, minutes * 60)
+                self._record_violation(group_id, user_id, "political")
+                await self._send(event, self._build_text(
+                    f"你因触碰涉政关键词(词语∶{pol_kw})被禁言{minutes}分钟"))
+                return True
             if await self._check_profanity(msg_text, event, group_id, user_id):
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
                 await self._handle_violation(event, "profanity", group_id, user_id, mid)
@@ -1576,11 +1599,51 @@ class GroupAdminPlugin(Star):
 
     # ----- 骂人检测 -----
 
+    def _check_political(self, msg_text: str) -> str:
+        """#204：涉政关键词命中检测（全局配置 political_keywords），返回命中词或空串。
+
+        涉政清单为硬清单：不受 AI 模式/管理员豁免影响前的文本检测顺序由 dispatch 保证。
+        """
+        if not msg_text:
+            return ""
+        text_lower = msg_text.lower()
+        for kw in self.config.get("political_keywords", []) or []:
+            k = str(kw).lower()
+            if k and k in text_lower:
+                return str(kw)
+        return ""
+
+    def _collect_profanity_keywords(self, group_id: str) -> list:
+        """汇总骂人/违禁词关键词列表（review#208 config-coverage-regression）。
+
+        来源清单（扩展时勿遗漏）：
+        1. group_overrides[gid]["profanity_keywords"]（按群指令写入）
+        2. top-level config["profanity_keywords"]（全局默认；无按群覆盖时由 get_group_setting 返回）
+        3. 旧 config["violation_keywords"]（WebUI 历史入口，兼容保留）
+        """
+        kws = list(self.get_group_setting(group_id, "profanity_keywords", []) or [])
+        for src in (
+            self.config.get("profanity_keywords", []) or [],
+            self.config.get("violation_keywords", []) or [],
+        ):
+            for k in src:
+                if k not in kws:
+                    kws.append(k)
+        return kws
+
     async def _check_profanity(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
         if not self.get_group_setting(group_id, "profanity_check_enabled", True):
             return False
         if not msg_text:
             return False
+        # #207：违禁词为硬清单，优先匹配且不受 AI 模式影响；
+        # 来源统一由 _collect_profanity_keywords 收敛（按群/全局/旧 violation_keywords）
+        keywords = self._collect_profanity_keywords(group_id)
+        text_lower = msg_text.lower()
+        for kw in keywords:
+            if str(kw).lower() and str(kw).lower() in text_lower:
+                logger.warning(f"[群违规检测] 命中违禁词 用户 {user_id}: {kw}")
+                return True
         use_ai = bool(self.get_group_setting(group_id, "profanity_use_ai", True))
         if use_ai and aiohttp is not None:
             api_endpoint = self.config.get("api_endpoint", "")
@@ -1590,12 +1653,6 @@ class GroupAdminPlugin(Star):
                 if is_profanity:
                     logger.warning(f"[群违规检测] 骂人 用户 {user_id} {reason}")
                     return True
-                return False  # AI 模式下不再走关键词
-        keywords = self.get_group_setting(group_id, "profanity_keywords", []) or []
-        text_lower = msg_text.lower()
-        for kw in keywords:
-            if str(kw).lower() and str(kw).lower() in text_lower:
-                return True
         return False
 
     async def _check_profanity_with_ai(self, api_endpoint: str, api_key: str, msg_text: str):
@@ -1648,32 +1705,56 @@ class GroupAdminPlugin(Star):
                 return True
         return False
 
+    @staticmethod
+    def _normalize_host(raw_host: str) -> str:
+        """归一化域名：去端口、去 www. 前缀、小写。"""
+        h = raw_host.split(":")[0].lower().strip(".")
+        if h.startswith("www."):
+            h = h[4:]
+        return h
+
     def _is_link_whitelisted(self, msg_text: str, group_id: str) -> bool:
-        """#195：检查消息中的链接是否命中白名单（全局+按群）。命中则不触发链接检测。"""
+        """#195：检查消息中的链接是否命中白名单（全局+按群）。命中则不触发链接检测。
+        匹配规则：精确域名匹配（已做归一化去端口/去 www./小写）。
+        白名单条目支持通配前缀 `*.example.com` 表示匹配该域及其所有子域。"""
         if not msg_text:
             return False
-        # 提取消息中所有域名/host
-        urls = re.findall(r"https?://([^\s/]+)|www\.([^\s/]+)", msg_text, re.IGNORECASE)
+        # 提取消息中所有链接的 hostname（用 urlparse 兼容带端口/路径的 URL）
+        from urllib.parse import urlparse
         hosts = set()
-        for m in urls:
-            for g in m:
-                if g:
-                    h = g.lower().split("/")[0].lstrip("www.")
-                    hosts.add(h)
+        for url_match in re.finditer(r"https?://[^\s]+", msg_text, re.IGNORECASE):
+            url = url_match.group(0)
+            parsed = urlparse(url)
+            if parsed.hostname:
+                hosts.add(self._normalize_host(parsed.hostname))
+        # 也匹配裸 www.example.com（无协议前缀）
+        for www_match in re.finditer(r"(?:^|\s)www\.[^\s]+", msg_text, re.IGNORECASE):
+            url = www_match.group(0).strip()
+            parsed = urlparse("http://" + url)
+            if parsed.hostname:
+                hosts.add(self._normalize_host(parsed.hostname))
         if not hosts:
             return False
-        # 全局白名单
-        global_wl = set(
-            str(x).lower().split("/")[0].lstrip("www.")
-            for x in (self.config.get("link_whitelist", []) or [])
-        )
-        # 按群白名单
-        group_wl = set(
-            str(x).lower().split("/")[0].lstrip("www.")
-            for x in (self.get_group_setting(group_id, "link_whitelist", []) or [])
-        )
-        all_wl = global_wl | group_wl
-        return bool(hosts & all_wl)
+        # 构建归一化白名单集合（精确条目 + 通配条目分开）
+        raw_global = self.config.get("link_whitelist", []) or []
+        raw_group = self.get_group_setting(group_id, "link_whitelist", []) or []
+        exact_wl = set()
+        wildcard_wl = set()  # 通配域名（去掉 *. 前缀）
+        for entry in list(raw_global) + list(raw_group):
+            e = self._normalize_host(str(entry))
+            if e.startswith("*."):
+                wildcard_wl.add(e[2:])  # "*.example.com" → "example.com"
+            else:
+                exact_wl.add(e)
+        # 精确匹配
+        if hosts & exact_wl:
+            return True
+        # 通配匹配：host 以 ".suffix" 结尾或等于 suffix
+        for host in hosts:
+            for domain in wildcard_wl:
+                if host == domain or host.endswith("." + domain):
+                    return True
+        return False
 
     async def _check_link(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
         if not self.get_group_setting(group_id, "link_check_enabled", False):
@@ -1808,56 +1889,16 @@ class GroupAdminPlugin(Star):
         self._set_group_override(group_id, "profanity_ban_duration", seconds)
         yield event.plain_result(f"[成功] 本群骂人禁言时长已设置为 {seconds} 秒")
 
-    @filter.command("添加骂人关键词", "添加骂人关键词（关键词检测模式，按群生效）")
-    async def add_profanity_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+    @filter.command("设涉政禁言时长", "设置涉政禁言时长（分钟，全局配置，#204）")
+    async def set_political_ban_duration_cmd(self, event: AstrMessageEvent, minutes: int = 0):
         if not await self._moderation_require_admin_msg(event):
             return
-        group_id = self._get_group_id_or_none(event)
-        if not group_id:
-            yield event.plain_result("此指令只能在群聊中使用")
+        if minutes <= 0:
+            yield event.plain_result("[错误] 禁言时长必须大于0")
             return
-        keyword = (keyword or "").strip()
-        if not keyword:
-            yield event.plain_result("[错误] 请提供关键词")
-            return
-        ok, kws = self._mutate_group_list(group_id, "profanity_keywords", "add", keyword)
-        if not ok:
-            yield event.plain_result(f"[错误] 关键词 '{keyword}' 已存在")
-            return
-        yield event.plain_result(f"[成功] 已添加本群骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
-
-    @filter.command("删除骂人关键词", "删除骂人关键词（按群生效）")
-    async def remove_profanity_keyword_cmd(self, event: AstrMessageEvent, keyword: str = ""):
-        if not await self._moderation_require_admin_msg(event):
-            return
-        group_id = self._get_group_id_or_none(event)
-        if not group_id:
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        keyword = (keyword or "").strip()
-        if not keyword:
-            yield event.plain_result("[错误] 请提供关键词")
-            return
-        ok, kws = self._mutate_group_list(group_id, "profanity_keywords", "remove", keyword)
-        if not ok:
-            yield event.plain_result(f"[错误] 关键词 '{keyword}' 不存在")
-            return
-        yield event.plain_result(f"[成功] 已删除本群骂人关键词 '{keyword}'（当前 {len(kws)} 个）")
-
-    @filter.command("查看骂人关键词", "查看骂人关键词列表（本群）")
-    async def list_profanity_keywords_cmd(self, event: AstrMessageEvent):
-        if not await self._moderation_require_admin_msg(event):
-            return
-        group_id = self._get_group_id_or_none(event)
-        if not group_id:
-            yield event.plain_result("此指令只能在群聊中使用")
-            return
-        kws = self.get_group_setting(group_id, "profanity_keywords", [])
-        if not kws:
-            yield event.plain_result("本群当前没有设置骂人关键词")
-            return
-        listing = "\n".join([f"{i+1}. {kw}" for i, kw in enumerate(kws)])
-        yield event.plain_result(f"本群骂人关键词（{len(kws)} 个）：\n{listing}")
+        self.config["political_ban_duration"] = minutes
+        self.save_config()
+        yield event.plain_result(f"[成功] 涉政禁言时长已设置为 {minutes} 分钟")
 
     @filter.command("切换骂人检测模式", "切换 AI 检测 / 关键词检测（按群生效）")
     async def toggle_profanity_mode_cmd(self, event: AstrMessageEvent):
@@ -2124,6 +2165,27 @@ class GroupAdminPlugin(Star):
         yield event.plain_result(f"本群广告关键词（{len(kws)} 个）：\n{head}{more}")
 
     # ===================== 链接白名单（#195，按群） =====================
+
+    @filter.command("开关链接检测", "开启/关闭本群链接检测撤回（/开关链接检测 on|off）")
+    async def toggle_link_check_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        gid = self._get_group_id_or_none(event)
+        if not gid:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        v = (value or "").strip().lower()
+        if v in ("on", "true", "开启"):
+            enabled = True
+        elif v in ("off", "false", "关闭"):
+            enabled = False
+        else:
+            enabled = not bool(self.get_group_setting(gid, "link_check_enabled", False))
+        self._set_group_override(gid, "link_check_enabled", enabled)
+        yield event.plain_result(
+            f"[成功] 本群链接检测已{'开启' if enabled else '关闭'}"
+            "（#199：管理员/群主默认豁免，如需对其生效请设本群 admin_bypass false）"
+        )
 
     @filter.command("添加链接白名单", "添加链接白名单域名（按群生效）")
     async def add_link_whitelist_cmd(self, event: AstrMessageEvent, domain: str = ""):
@@ -3200,13 +3262,34 @@ class GroupAdminPlugin(Star):
             return
         msg_data = msg.get("data") if isinstance(msg, dict) else msg
         image_url = ""
-        if isinstance(msg_data, dict):
-            segs = msg_data.get("message") or []
-            for seg in segs:
-                if not isinstance(seg, dict):
-                    continue
-                if seg.get("type") == "image":
-                    image_url = (seg.get("data") or {}).get("url", "") or (seg.get("data") or {}).get("file", "")
+        segs = msg_data.get("message") if isinstance(msg_data, dict) else None
+        if isinstance(segs, str):
+            # #206：部分 OneBot 实现 get_msg 返回 CQ 字符串而非段列表
+            m = re.search(r"\[CQ:image[^\]]*?url=([^\],]+)", segs) or \
+                re.search(r"\[CQ:image[^\]]*?file=([^\],]+)", segs)
+            if m:
+                image_url = m.group(1)
+            segs = None
+        for seg in segs or []:
+            if not isinstance(seg, dict):
+                continue
+            if seg.get("type") == "image":
+                d = seg.get("data") or {}
+                image_url = d.get("url") or d.get("file") or d.get("file_id") or ""
+                if image_url:
+                    break
+        if not image_url and isinstance(msg_data, dict):
+            # #206：兜底解析 raw_message 中的 CQ image
+            rawmsg = str(msg_data.get("raw_message") or "")
+            m = re.search(r"\[CQ:image[^\]]*?url=([^\],]+)", rawmsg) or \
+                re.search(r"\[CQ:image[^\]]*?file=([^\],]+)", rawmsg)
+            if m:
+                image_url = m.group(1)
+        if not image_url:
+            # #206：兜底从当前事件消息链的引用组件中取 Image
+            for comp in getattr(event.message_obj, "message", []) or []:
+                if comp.__class__.__name__ == "Image":
+                    image_url = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
                     if image_url:
                         break
         if not image_url:
@@ -3744,6 +3827,74 @@ class GroupAdminPlugin(Star):
 
     # ===================== 全消息监听 =====================
 
+    def _dup_face_enabled(self, group_id: str) -> bool:
+        """#196：重复表情包撤回是否启用（按群 bool 覆盖 > 全局开关）。"""
+        ov = self.config.get("group_overrides", {}).get(str(group_id), {}).get("dup_face_recall_enabled")
+        if isinstance(ov, bool):
+            return ov
+        return bool(self.config.get("dup_face_recall_enabled", False))
+
+    async def _dup_face_recall_check(self, event: AstrMessageEvent, raw: dict, group_id: str) -> None:
+        """#196：检测群内重复表情包（face id / 图片指纹），命中则撤回新消息。
+
+        仅撤回新发的重复消息（旧消息可能已超撤回窗口）；
+        图片指纹优先 md5，回退 file/url（review#213 unstable-fingerprint）；
+        seen 仅保留最近 30 分钟指纹，避免陈旧指纹误判（review#213 unbounded-growth）。
+        """
+        if not self._dup_face_enabled(group_id):
+            return
+        now = time.time()
+        keys = []
+        for seg in raw.get("message") or []:
+            if not isinstance(seg, dict):
+                continue
+            st = seg.get("type")
+            d = seg.get("data") or {}
+            if st == "face" and d.get("id"):
+                keys.append(("face", str(d.get("id"))))
+            elif st == "image":
+                fp = d.get("md5") or d.get("file") or d.get("url")
+                if fp:
+                    keys.append(("image", str(fp)))
+        if not keys:
+            return
+        seen = self._dup_face_seen.setdefault(group_id, [])
+        # 清理超过 30 分钟的陈旧指纹
+        seen[:] = [it for it in seen if now - it[1] <= 1800]
+        old_keys = {it[0] for it in seen}
+        dup = any(k in old_keys for k in keys)
+        for k in keys:
+            if k not in old_keys:
+                seen.append((k, now))
+        if len(seen) > 200:
+            del seen[: len(seen) - 200]
+        if dup:
+            mid = raw.get("message_id")
+            if mid:
+                ok, err = await self._do_recall(event, mid)
+                if ok:
+                    logger.info(f"[重复表情包] 群 {group_id} 撤回重复表情包消息 {mid}")
+                else:
+                    logger.warning(f"[重复表情包] 群 {group_id} 撤回 {mid} 失败: {err}")
+
+    @filter.command("重复表情包撤回", "按群覆盖重复表情包自动撤回（开/关，#196）")
+    async def toggle_dup_face_recall_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        gid = self._get_group_id_or_none(event)
+        if not gid:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        v = (value or "").strip().lower()
+        if v in ("开", "on", "true", "开启"):
+            enabled = True
+        elif v in ("关", "off", "false", "关闭"):
+            enabled = False
+        else:
+            enabled = not self._dup_face_enabled(gid)
+        self._set_group_override(gid, "dup_face_recall_enabled", enabled)
+        yield event.plain_result(f"[成功] 本群重复表情包撤回已{'开启' if enabled else '关闭'}")
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """监听群消息：发言计数 + 违规检测。"""
@@ -3766,6 +3917,9 @@ class GroupAdminPlugin(Star):
 
         # 群违规检测（合并自参考插件，#19 + 图片/刷屏/骂人/广告/链接/群号推广）
         await self._moderation_dispatch(event, raw, group_id, user_id)
+
+        # #196：重复表情包自动撤回（全局开关 + 按群覆盖）
+        await self._dup_face_recall_check(event, raw, group_id)
 
         # 加群申请引用回复处理（#57）
         reply_id = self._get_reply_id(event)
@@ -3884,12 +4038,14 @@ class GroupAdminPlugin(Star):
             if enabled and join_approve_keywords and any(kw in comment for kw in join_approve_keywords):
                 await self._handle_group_request(event, flag, True, "命中关键词自动同意")
                 yield event.plain_result(f"已同意 {user_id} 的加群申请（命中关键词）")
-                await self._notify_admins(
-                    f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
-                    f"验证消息: {comment}\n"
-                    f"原因: 命中关键词",
-                    group_id=group_id,
-                )
+                # #205：全局开关关闭时不发申请/审批通知
+                if self.config.get("join_request_notify_enabled", True):
+                    await self._notify_admins(
+                        f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
+                        f"验证消息: {comment}\n"
+                        f"原因: 命中关键词",
+                        group_id=group_id,
+                    )
                 # #186：命中加群审核通过关键词后，在该群发送通知
                 await self._send_group_text(
                     event, group_id,
@@ -3924,11 +4080,28 @@ class GroupAdminPlugin(Star):
                     pending = self.config.setdefault("pending_join_requests", {})
                     pending[str(sent_id)] = {"flag": flag, "group_id": group_id, "user_id": user_id}
                     self.save_config()
-                    await self._notify_admins(
-                        f"[加群请求] {user_id} 申请加入群 {group_id}\n"
-                        f"已在群内发送提醒，请管理员引用回复同意/拒绝",
-                        group_id=group_id,
-                    )
+                    # #205：全局开关关闭时不发管理员通知
+                    if self.config.get("join_request_notify_enabled", True):
+                        await self._notify_admins(
+                            f"[加群请求] {user_id} 申请加入群 {group_id}\n"
+                            f"已在群内发送提醒，请管理员引用回复同意/拒绝",
+                            group_id=group_id,
+                        )
+
+    @filter.command("新人加群申请通知", "开关新人加群申请通知（on/off，全局配置，#205）")
+    async def toggle_join_request_notify_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        v = (value or "").strip().lower()
+        if v in ("on", "true", "开", "开启"):
+            enabled = True
+        elif v in ("off", "false", "关", "关闭"):
+            enabled = False
+        else:
+            enabled = not bool(self.config.get("join_request_notify_enabled", True))
+        self.config["join_request_notify_enabled"] = enabled
+        self.save_config()
+        yield event.plain_result(f"[成功] 新人加群申请通知已{'开启' if enabled else '关闭'}（全局）")
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent):
@@ -3972,7 +4145,12 @@ class GroupAdminPlugin(Star):
         if any(kw in msg_text for kw in keywords):
             msg_id = raw.get("message_id")
             if msg_id:
-                await self._recall_message(event, str(msg_id))
+                # #202：记录撤回结果，失败时给出原因，避免静默
+                ok, err = await self._do_recall(event, msg_id)
+                if ok:
+                    logger.info(f"[自动撤回] 命中关键词，已撤回 bot 消息 {msg_id}")
+                else:
+                    logger.warning(f"[自动撤回] 撤回 bot 消息 {msg_id} 失败: {err}")
 
     def _extract_text(self, raw: dict) -> str:
         parts = []

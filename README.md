@@ -487,3 +487,8 @@ astrbot_plugin_gm/
 
 - 命令别名：群友昵称（alias 别人昵称/群昵称/设群昵称/设群友昵称）、自己昵称（alias 改群昵称/改昵称）、群名（alias 群名称/改群名/修改群名）。若与 AstrBot 内置或其它插件同名指令冲突，请使用主名或停用冲突插件。
 - 默认行为（owner 09-16 拍板）：`enabled_groups` 留空 = 不启用；启用需显式配置列表（* / all / 群号）或按群 bool 覆盖。`auto_recall_enabled_groups` 留空且无关键词 = 不启用；配了关键词未配 enabled 时兼容全群启用（#170）。
+
+## 涉政关键词与骂人关键词配置（#204）
+
+- 骂人关键词仅支持全局配置（插件配置 profanity_keywords）；添加/删除/查看骂人关键词指令已移除。
+- 涉政关键词（political_keywords）为全局硬清单：命中即撤回+按 political_ban_duration 禁言，并提示「你因触碰涉政关键词(词语∶xx)被禁言xx分钟」；时长可用 /设涉政禁言时长 <分钟> 设置。

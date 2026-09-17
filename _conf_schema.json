@@ -31,6 +31,12 @@
         "hint": "留空则默认不启用自动撤回；推荐用 /设置群配置 auto_recall_enabled_groups true 按群开启。",
         "default": []
     },
+    "dup_face_recall_enabled": {
+        "description": "重复表情包自动撤回全局开关（#196，默认关）",
+        "type": "bool",
+        "hint": "开启后群内出现与近 30 分钟内相同的表情包（face id / 图片 md5→file→url 指纹）时自动撤回新消息。按群覆盖：/重复表情包撤回 开|关，或 group_overrides[gid][dup_face_recall_enabled]。",
+        "default": false
+    },
     "violation_action": {
         "description": "违规处置动作（兼容旧配置，新流程已接管）",
         "type": "string",
@@ -83,6 +89,12 @@
         "type": "bool",
         "hint": "推荐按群覆盖：/设置群配置 join_request_notify_in_group true/false。",
         "default": false
+    },
+    "join_request_notify_enabled": {
+        "description": "新人加群申请通知全局开关（#205，默认开启）",
+        "type": "bool",
+        "hint": "关闭后不再向管理员发送加群申请/审批通知（群内提醒仍由 join_request_notify_in_group 按群控制）。指令：/新人加群申请通知 on|off。",
+        "default": true
     },
     "join_reject_reason": {
         "description": "加群申请自动拒绝时的默认理由",
@@ -207,11 +219,24 @@
         "hint": "推荐按群覆盖。",
         "default": 600
     },
-    "profanity_keywords": {
-        "description": "骂人关键词列表（关键词模式下使用）",
+    "political_keywords": {
+        "description": "涉政关键词列表（全局硬清单，#204）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "推荐按群覆盖：/设置群配置 profanity_keywords [关键词列表]。",
+        "hint": "命中即撤回+按 political_ban_duration 禁言，并提示固定文案。仅全局配置。",
+        "default": []
+    },
+    "political_ban_duration": {
+        "description": "涉政禁言时长（分钟，全局，#204）",
+        "type": "int",
+        "hint": "指令：/设涉政禁言时长 <分钟>。",
+        "default": 600
+    },
+    "profanity_keywords": {
+        "description": "骂人关键词列表（关键词模式下使用，仅全局配置，#204 已移除按群指令）",
+        "type": "list",
+        "items": {"type": "string"},
+        "hint": "仅全局配置（#204 已移除添加/删除/查看骂人关键词指令）；关键词模式由 /切换骂人检测模式 控制。",
         "default": [
             "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
             "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
