@@ -3742,12 +3742,15 @@ class GroupAdminPlugin(Star):
         return bool(self.config.get("dup_face_recall_enabled", False))
 
     async def _dup_face_recall_check(self, event: AstrMessageEvent, raw: dict, group_id: str) -> None:
-        """#196：检测群内重复表情包（face id / image file 指纹），命中则撤回新消息。
+        """#196：检测群内重复表情包（face id / 图片指纹），命中则撤回新消息。
 
-        仅撤回新发的重复消息（旧消息可能已超撤回窗口）；指纹为 face id 或 image file/md5。
+        仅撤回新发的重复消息（旧消息可能已超撤回窗口）；
+        图片指纹优先 md5，回退 file/url（review#213 unstable-fingerprint）；
+        seen 仅保留最近 30 分钟指纹，避免陈旧指纹误判（review#213 unbounded-growth）。
         """
         if not self._dup_face_enabled(group_id):
             return
+        now = time.time()
         keys = []
         for seg in raw.get("message") or []:
             if not isinstance(seg, dict):
@@ -3756,15 +3759,20 @@ class GroupAdminPlugin(Star):
             d = seg.get("data") or {}
             if st == "face" and d.get("id"):
                 keys.append(("face", str(d.get("id"))))
-            elif st == "image" and (d.get("file") or d.get("md5")):
-                keys.append(("image", str(d.get("file") or d.get("md5"))))
+            elif st == "image":
+                fp = d.get("md5") or d.get("file") or d.get("url")
+                if fp:
+                    keys.append(("image", str(fp)))
         if not keys:
             return
         seen = self._dup_face_seen.setdefault(group_id, [])
-        dup = any(k in seen for k in keys)
+        # 清理超过 30 分钟的陈旧指纹
+        seen[:] = [it for it in seen if now - it[1] <= 1800]
+        old_keys = {it[0] for it in seen}
+        dup = any(k in old_keys for k in keys)
         for k in keys:
-            if k not in seen:
-                seen.append(k)
+            if k not in old_keys:
+                seen.append((k, now))
         if len(seen) > 200:
             del seen[: len(seen) - 200]
         if dup:
