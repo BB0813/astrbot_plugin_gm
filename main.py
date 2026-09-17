@@ -55,6 +55,8 @@ class GroupAdminPlugin(Star):
         self.stats_path = self.data_dir / "stats.json"
         self.reports_path = self.data_dir / "reports.json"
         self.config = self.load_config()
+        # #196：重复表情包检测的近期_seen 缓存（内存态，不持久化）
+        self._dup_face_seen: dict = {}
         # 合并 AstrBot 框架注入的 WebUI 配置（修复 #180）。
         # AstrBot star_manager 会尝试以 config=<AstrBotConfig> 实例化插件；旧版插件
         # __init__ 不接收该参数，会被框架 except 退回只传 context，导致 WebUI 面板配置
@@ -122,6 +124,8 @@ class GroupAdminPlugin(Star):
             # 关键词自动撤回（#46）
             "auto_recall_keywords": [],
             "auto_recall_enabled_groups": [],
+            # #196：重复表情包自动撤回全局开关（默认关）
+            "dup_face_recall_enabled": False,
             # 违规检测（#19）
             "violation_keywords": [],
             # #204：涉政关键词（全局）与涉政禁言时长（分钟）
@@ -3727,6 +3731,74 @@ class GroupAdminPlugin(Star):
 
     # ===================== 全消息监听 =====================
 
+    def _dup_face_enabled(self, group_id: str) -> bool:
+        """#196：重复表情包撤回是否启用（按群 bool 覆盖 > 全局开关）。"""
+        ov = self.config.get("group_overrides", {}).get(str(group_id), {}).get("dup_face_recall_enabled")
+        if isinstance(ov, bool):
+            return ov
+        return bool(self.config.get("dup_face_recall_enabled", False))
+
+    async def _dup_face_recall_check(self, event: AstrMessageEvent, raw: dict, group_id: str) -> None:
+        """#196：检测群内重复表情包（face id / 图片指纹），命中则撤回新消息。
+
+        仅撤回新发的重复消息（旧消息可能已超撤回窗口）；
+        图片指纹优先 md5，回退 file/url（review#213 unstable-fingerprint）；
+        seen 仅保留最近 30 分钟指纹，避免陈旧指纹误判（review#213 unbounded-growth）。
+        """
+        if not self._dup_face_enabled(group_id):
+            return
+        now = time.time()
+        keys = []
+        for seg in raw.get("message") or []:
+            if not isinstance(seg, dict):
+                continue
+            st = seg.get("type")
+            d = seg.get("data") or {}
+            if st == "face" and d.get("id"):
+                keys.append(("face", str(d.get("id"))))
+            elif st == "image":
+                fp = d.get("md5") or d.get("file") or d.get("url")
+                if fp:
+                    keys.append(("image", str(fp)))
+        if not keys:
+            return
+        seen = self._dup_face_seen.setdefault(group_id, [])
+        # 清理超过 30 分钟的陈旧指纹
+        seen[:] = [it for it in seen if now - it[1] <= 1800]
+        old_keys = {it[0] for it in seen}
+        dup = any(k in old_keys for k in keys)
+        for k in keys:
+            if k not in old_keys:
+                seen.append((k, now))
+        if len(seen) > 200:
+            del seen[: len(seen) - 200]
+        if dup:
+            mid = raw.get("message_id")
+            if mid:
+                ok, err = await self._do_recall(event, mid)
+                if ok:
+                    logger.info(f"[重复表情包] 群 {group_id} 撤回重复表情包消息 {mid}")
+                else:
+                    logger.warning(f"[重复表情包] 群 {group_id} 撤回 {mid} 失败: {err}")
+
+    @filter.command("重复表情包撤回", "按群覆盖重复表情包自动撤回（开/关，#196）")
+    async def toggle_dup_face_recall_cmd(self, event: AstrMessageEvent, value: str = ""):
+        if not await self._moderation_require_admin_msg(event):
+            return
+        gid = self._get_group_id_or_none(event)
+        if not gid:
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        v = (value or "").strip().lower()
+        if v in ("开", "on", "true", "开启"):
+            enabled = True
+        elif v in ("关", "off", "false", "关闭"):
+            enabled = False
+        else:
+            enabled = not self._dup_face_enabled(gid)
+        self._set_group_override(gid, "dup_face_recall_enabled", enabled)
+        yield event.plain_result(f"[成功] 本群重复表情包撤回已{'开启' if enabled else '关闭'}")
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """监听群消息：发言计数 + 违规检测。"""
@@ -3749,6 +3821,9 @@ class GroupAdminPlugin(Star):
 
         # 群违规检测（合并自参考插件，#19 + 图片/刷屏/骂人/广告/链接/群号推广）
         await self._moderation_dispatch(event, raw, group_id, user_id)
+
+        # #196：重复表情包自动撤回（全局开关 + 按群覆盖）
+        await self._dup_face_recall_check(event, raw, group_id)
 
         # 加群申请引用回复处理（#57）
         reply_id = self._get_reply_id(event)
