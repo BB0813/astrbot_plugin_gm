@@ -245,7 +245,7 @@ pip install astrbot_plugin_group_admin
 }
 ```
 
-按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
+按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`group_admin_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
 > `group_overrides` 内部存储项不再展示在 WebUI 配置页（#192 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护。
 > 兼容旧配置三项 `violation_action` / `violation_mute_minutes` / `violation_enabled_groups` 不再展示在 WebUI 配置页（#192 owner，schema 以 invisible 保留兼容）；旧 config.json 残留值不会被删除，其中 `violation_enabled_groups` 仅在 `enabled_groups` 留空时用于运行时迁移兼容判定。
@@ -338,11 +338,11 @@ pip install astrbot_plugin_group_admin
 1. **插件管理员**：拥有使用所有管理命令的权限。识别方式：
    - QQ 群管理员
    - QQ 群主
-2. **专项权限管理员**：`group_admin_admins`（可设/取消群管理）等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。`title_admins`、`kick_admins` 不再提供 WebUI 全局配置项（#188），仍支持按群覆盖（在 `group_overrides` 中配置 `title_admins` / `kick_admins` 列表）。
+2. **专项权限管理员**：仅保留 `group_admin_admins`（可设/取消群管理），名单中的人执行 `/设管理` `/取消管理` 时不受群管理身份限制。头衔/踢人专项权限列表（`title_admins`/`kick_admins`）已移除（#219，owner 09-18），`/头衔` `/踢` 等操作由插件管理员（群管理员/群主）执行。
 
 `group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高）。
 
-> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
+> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需向非群管理员用户授予设管理权限，使用 `group_admin_admins` 列表。
 
 ---
 
