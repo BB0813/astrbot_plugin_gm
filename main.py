@@ -186,7 +186,7 @@ class GroupAdminPlugin(Star):
             "threshold": 0.7,
             "check_porn": True,
             "check_sexy": True,
-            # 监控群组（* 或 all 表示全部启用；为空表示不监控；可按群覆盖为 bool）
+            # 监控群组（* 或 all 表示全部启用；留空 = 全群启用（#192 owner 拍板）；可按群覆盖为 bool 显式关闭）
             "enabled_groups": [],
             "spam_check_enabled": True,
             "spam_threshold": 5,
@@ -1169,25 +1169,28 @@ class GroupAdminPlugin(Star):
         """群是否启用违规检测。
         优先级
         1. group_overrides[gid]["enabled_groups"] 为 bool 时，按 bool 决定
-        2. top-level enabled_groups 列表：包含 * / all 表示全部；包含群号表示启用
-        3. 兼容旧 violation_enabled_groups 列表
-        4. owner 09-16 拍板：留空 = 不启用（安全默认）；启用需显式配置列表或按群 bool
+        2. top-level enabled_groups 列表：包含 * / all 表示全部；包含群号表示启用；
+           非空但未命中表示不启用
+        3. 兼容旧 violation_enabled_groups 列表：非空时按旧列表判定（老用户行为不漂移）
+        4. #192 owner 拍板：两处均留空 = 全群启用
         """
         overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
         v = overrides.get("enabled_groups")
         if isinstance(v, bool):
             return v
         enabled = self.config.get("enabled_groups", []) or []
-        if not enabled:
+        if enabled:
+            for x in enabled:
+                sx = str(x).lower()
+                if sx in ("*", "all"):
+                    return True
+                if str(x) == str(group_id):
+                    return True
             return False
-        for x in enabled:
-            sx = str(x).lower()
-            if sx in ("*", "all"):
-                return True
-            if str(x) == str(group_id):
-                return True
         legacy = self.config.get("violation_enabled_groups", []) or []
-        return str(group_id) in [str(x) for x in legacy]
+        if legacy:
+            return str(group_id) in [str(x) for x in legacy]
+        return True
 
     def _is_user_whitelisted(self, group_id: str, user_id: str) -> bool:
         whitelist = self.get_group_setting(group_id, "whitelist_users", []) or []
@@ -3995,8 +3998,11 @@ class GroupAdminPlugin(Star):
             enabled_groups = self.get_group_setting(group_id, "enabled_groups", [])
             violation_keywords = self.get_group_setting(group_id, "violation_keywords", [])
             join_approve_keywords = self.get_group_setting(group_id, "join_approve_keywords", [])
-            # #192 owner：留空 = 全群启用；迁移兼容：新列表为空回退旧 violation_enabled_groups
-            if not enabled_groups:
+            # #192 owner：留空 = 全群启用；迁移兼容：新列表为空回退旧 violation_enabled_groups；
+            # 按群覆盖 bool 最高优先（可对单群显式关）
+            if isinstance(enabled_groups, bool):
+                enabled = enabled_groups
+            elif not enabled_groups:
                 legacy_groups = self.config.get("violation_enabled_groups", []) or []
                 if legacy_groups:
                     enabled = group_id in [str(x) for x in legacy_groups]
@@ -4128,15 +4134,15 @@ class GroupAdminPlugin(Star):
 
         enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
         keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
-        # #170：兼容只配 keywords 未配 enabled_groups 的场景，配了关键词则默认全群启用
-        # owner 09-16：留空且无关键词 = 不启用（安全默认）
-        if not enabled and keywords:
-            enabled = ["*"]
-        if not enabled:
-            return
-        if "*" not in [str(x) for x in enabled] and "all" not in [str(x) for x in enabled]:
-            if group_id not in [str(x) for x in enabled]:
+        # #192 owner 拍板：留空 = 全群启用（keywords 为空时本就无命中，不产生实际撤回）；
+        # 按群覆盖 bool 可单群显式开/关；非空列表按 * / all / 群号判定
+        if isinstance(enabled, bool):
+            if not enabled:
                 return
+        elif enabled:
+            if "*" not in [str(x) for x in enabled] and "all" not in [str(x) for x in enabled]:
+                if group_id not in [str(x) for x in enabled]:
+                    return
         if not keywords:
             return
         msg_text = self._extract_text(raw)
