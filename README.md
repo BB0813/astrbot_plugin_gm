@@ -4,8 +4,8 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-插件-green.svg)](https://github.com/Snowyyu/AstrBot)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-red.svg)](LICENSE)
 
-> 本项目采用 **AGPL-3.0** 许可证，是基于网络分发（Bot / 服务器场景）的**主动选择**：以服务器形式对外提供功能的项目，AGPL 要求部署方开放修改后的源码，与 QQ 群管 Bot 的部署形态契合。本插件的违规检测模块移植自 [astrbot_plugin_group_moderation](https://github.com/huangzuan-dev/astrbot_plugin_group_moderation)（同为 AGPL-3.0），见 [NOTICE](NOTICE)。
->
+> 本项目采用 **AGPL-3.0** 许可证，是基于网络分发（Bot / 服务器场景）的**主动选择**：以服务器形式对外提供功能的项目，AGPL 要求部署方开放修改后的源码，与 QQ 群管 Bot 的部署形态契合。
+
 > **⚠️ AGPL §13 网络服务条款：以服务器 / 机器人形式对外提供修改后版本，须向交互方开放修改后全部源码。Fork 与二次分发请审慎评估并遵守 AGPL 全部条款。**
 
 ---
