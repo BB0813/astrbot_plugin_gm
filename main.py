@@ -1,8 +1,7 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.api import logger, AstrBotConfig
 from astrbot.api.message_components import Plain, At
-
 # #246：event.send 只接受 MessageChain（AstrBot 4.28 起会直接访问 .chain），
 # 若 MessageChain 取不到就退化为传 list，会抛 `'list' object has no attribute 'chain'`。
 # 官方导出路径是 astrbot.api.event，需放在最前；后两个仅为老版本兼容兜底。
@@ -25,6 +24,7 @@ import threading
 import asyncio
 import base64
 import hashlib
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -46,6 +46,11 @@ _DEFAULT_PROFANITY_PROMPT = (
     "\"severity\": \"mild|medium|severe\"}"
 )
 
+# 运行时动态映射键（以群号 / 消息ID 为键，运行时增删）：**不能**放进框架配置——
+# AstrBotConfig 加载时会把这些未在 _conf_schema.json 声明的子键判为冗余并删除，
+# 故单独存 data/plugin_data/group_admin/runtime.json（见 _load_runtime_maps）
+_RUNTIME_MAP_KEYS = ("group_overrides", "groups", "pending_join_requests")
+
 
 def _parse_qq_list(text: str) -> list:
     """从文本中提取所有合法的QQ号（5-12位数字）。"""
@@ -60,7 +65,7 @@ def _parse_qq_list(text: str) -> list:
     "https://github.com/mjy1113451/astrbot_plugin_gm"
 )
 class GroupAdminPlugin(Star):
-    def __init__(self, context: Context, config=None):
+    def __init__(self, context: Context, config=AstrBotConfig):
         super().__init__(context)
         try:
             from astrbot.api.star import StarTools
@@ -71,31 +76,23 @@ class GroupAdminPlugin(Star):
         if not self.data_dir.exists():
             self.data_dir.mkdir(parents=True, exist_ok=True)
 
+        # 旧版本地配置路径：仅用于一次性迁移 / 框架未注入 AstrBotConfig 时降级落盘
         self.config_path = self.data_dir / "config.json"
+        # 运行时动态映射（按群覆盖 / 欢迎语 / 待审申请）本地存储，见 _load_runtime_maps
+        self.runtime_path = self.data_dir / "runtime.json"
         self.stats_path = self.data_dir / "stats.json"
         self.reports_path = self.data_dir / "reports.json"
-        self.config = self.load_config()
+        # 配置读取（修复 #180）：默认值统一由 _conf_schema.json 声明，AstrBot star_manager
+        # 会以 config=<AstrBotConfig> 实例化插件并注入「schema 默认值 + WebUI 修改值」，
+        # 保存统一走官方 self.config.save_config()。
+        self.config = config
+        # 动态映射不能放框架配置（框架加载时会清空这些嵌套数据），单独加载并镜像为属性
+        self._runtime_maps = self._load_runtime_maps()
         # #196：重复表情包检测的近期_seen 缓存（内存态，不持久化）
         # key 为 (群号, 发送者QQ)，#239 起按发送者隔离，避免跨用户误撤回
         self._dup_face_seen: dict = {}
         # #238：每个群最近处理过的 message_id，用于丢弃重复投递的同一消息
         self._dup_face_last_mid: dict = {}
-        # 合并 AstrBot 框架注入的 WebUI 配置（修复 #180）。
-        # AstrBot star_manager 会尝试以 config=<AstrBotConfig> 实例化插件；旧版插件
-        # __init__ 不接收该参数，会被框架 except 退回只传 context，导致 WebUI 面板配置
-        # 全部失效（如 mute_notice=False 不生效）。本插件接收后：
-        #   - AstrBotConfig 是 dict 子类，直接取其键值；
-        #   - 全局键以 WebUI 注入为准（WebUI 才能改全局配置，本地 config.json 的全局键
-        #     只是历史默认值兜底），group_overrides（按群覆盖）保留本地。
-        if config is not None:
-            ui_config = config if isinstance(config, dict) else {}
-            local_overrides = (self.config.get("group_overrides") or {}).copy()
-            self.config.update(ui_config)
-            if local_overrides:
-                self.config["group_overrides"] = {
-                    **self.config.get("group_overrides", {}),
-                    **local_overrides,
-                }
         self.stats = self.load_json(self.stats_path, {"groups": {}})
         self.reports = self.load_json(self.reports_path, {"pending": []})
         self._msg_save_counter = 0  # #152：发言计数批量持久化计数器
@@ -116,22 +113,8 @@ class GroupAdminPlugin(Star):
         # {相对路径: md5}；未命中缓存的路径在运行时懒计算并回填。
         self._banned_file_md5_cache: dict = {}
 
-        # #192 review：留空=全群启用 语义变更的启动告警（仅首次部署提示，避免刷屏）
-        _ar_eg = self.config.get("enabled_groups", []) or []
-        _ar_ag = self.config.get("auto_recall_enabled_groups", []) or []
-        _legacy = self.config.get("violation_enabled_groups", []) or []
-        if not _ar_eg and not _legacy:
-            logger.warning(
-                "[IMPORTANT][群管插件] enabled_groups 为空：按 #192 新语义，违规检测"
-                "（含刷屏/图片AI等）将在【全部群】启用。如需限定范围，请配置 "
-                "enabled_groups 列表，或通过 group_overrides 将指定群 enabled_groups 设为 false。"
-            )
-        if not _ar_ag:
-            logger.warning(
-                "[IMPORTANT][群管插件] auto_recall_enabled_groups 为空：按 #192 新语义，"
-                "Bot 发言自动撤回将在【全部群】生效（命中 auto_recall_keywords 时）。"
-                "如需限定范围，请配置该列表。"
-            )
+        # #192 review：留空=全群启用 语义变更的启动告警（详见 _warn_if_group_scope_empty）
+        self._warn_if_group_scope_empty()
 
     # ===================== 通用 IO =====================
 
@@ -145,151 +128,90 @@ class GroupAdminPlugin(Star):
         return default
 
     def save_json(self, path: Path, data):
+        """原子写入 JSON：先写同目录临时文件再 os.replace，避免中途异常写坏原文件。"""
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error(f"保存 {path.name} 失败: {e}")
 
-    def _get_default_config(self) -> dict:
-        return {
-            "show_recall_notice": True,
-            "mute_notice": True,
-            # 修改群名成功是否群内通知（owner 09-18；关闭时仅失败提示，支持按群覆盖）
-            "group_name_notice": True,
-            "reject_re_add": False,
-            "groups": {},
-            # 按操作类型分别配置管理员（#34 权限系统重构）
-            "title_admins": [],
-            "group_admin_admins": [],
-            # 按群设置「设管理」专项管理员（{群号: [QQ...]}，WebUI 可编辑；
-            # 优先级：群内指令写入的 group_overrides > 本表 > 全局 group_admin_admins）
-            "group_admin_admins_by_group": {},
-            "kick_admins": [],
-            # 关键词自动撤回（#46）
-            "auto_recall_keywords": [],
-            "auto_recall_enabled_groups": [],
-            # #196：重复表情包自动撤回全局开关（默认关）
-            "dup_face_recall_enabled": False,
-            # 违规检测（#19）
-            "violation_keywords": [],
-            # 旧兼容键默认值（review#192 breaking-change-default）：
-            # join_audit 等流程会读这些键，缺键时取 None 易抛 TypeError
-            # #204：涉政关键词（全局）与涉政禁言时长（分钟）
-            "political_keywords": [],
-            "political_ban_duration": 600,
-            "violation_action": "none",
-            "violation_mute_minutes": 10,
-            "violation_enabled_groups": [],
-            # 举报（#21）
-            "report_notify_admins": [],
-            # 群公告与排名（#16, #29）
-            "rank_top_n": 10,
-            # 禁言次数达到阈值后自动踢出（#103），0 表示关闭
-            "mute_kick_threshold": 0,
-            # 加群请求关键词同意（#27 增强）
-            "join_approve_keywords": [],
-            "join_notify_admins": [],
-            # 加群申请群内提醒（#57）
-            "join_request_notify_in_group": False,
-            # #205：新人加群申请通知全局开关（默认开启）
-            "join_request_notify_enabled": True,
-            "pending_join_requests": {},
-            "join_reject_reason": "不满足加群条件",
-            # #155：加群申请审核总开关（默认启用），支持按群覆盖
-            "join_audit_enabled": True,
-            # #74 配置按群独立（保留全局默认值）
-            "group_overrides": {},
-            # ====== 群违规检测（合并自 astrbot_plugin_group_moderation） ======
-            # AI 审核 API（图片 / 骂人 AI 检测共用）
-            "api_type": "openai_vision",
-            "api_endpoint": "",
-            "api_key": "",
-            "model_name": "gpt-4o",
-            "detection_prompt": "",
-            "threshold": 0.7,
-            "check_porn": True,
-            "check_sexy": True,
-            # 监控群组（* 或 all 表示全部启用；为空表示不监控；可按群覆盖为 bool）
-            "enabled_groups": [],
-            "spam_check_enabled": True,
-            "spam_threshold": 5,
-            "spam_time_window": 10,
-            "spam_ban_duration": 600,
-            "profanity_check_enabled": True,
-            "profanity_use_ai": True,
-            "profanity_ban_duration": 600,
-            # #243：AI 判骂人时按严重程度分级禁言（秒）；命中分级表用对应值，
-            # 未返回/非法严重度则回退 profanity_ban_duration
-            "profanity_ban_duration_severity": {
-                "mild": 180, "medium": 600, "severe": 1800,
-            },
-            # #243：分级禁言开关（owner 要求）；关闭后一律按 profanity_ban_duration 固定时长
-            "profanity_severity_enabled": True,
-            # #243：AI 判骂人提示词（留空用内置默认；支持 {text} 占位符）
-            "profanity_detection_prompt": "",
-            "profanity_keywords": [
-                "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
-                "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
-                "贱人", "婊子",
-            ],
-            "ad_check_enabled": True,
-            "ad_ban_duration": 600,
-            "ad_keywords": [
-                "加群", "加微信", "加QQ", "联系我", "私聊", "代练", "代打",
-                "刷钻", "刷币", "外挂", "辅助", "出售", "转让", "低价",
-                "优惠", "促销", "折扣", "代购", "微商", "兼职", "赚钱",
-                "日赚", "月入", "进群",
-            ],
-            "link_check_enabled": False,
-            "link_ban_duration": 600,
-            "link_whitelist": [],  # #195：全局链接白名单（host 列表，命中不检测/撤回/禁言）
-            "blacklisted_users": [],  # #194：黑名单 QQ 列表（按群覆盖，命中自动拒绝加群）
-            "group_promotion_check_enabled": True,
-            "group_promotion_ban_duration": 600,
-            "ban_duration": 600,
-            "whitelist_users": [],
-            "admin_bypass": True,
-            "notify_on_violation": True,
-            # #162：用户自定义违禁图片（按 MD5 比对），支持按群覆盖
-            "banned_images": [],
-            # #184：WebUI 上传违禁图片文件（file 类型，AstrBot >= v4.13.0），
-            # 值为相对路径列表（files/banned_image_files/<filename>），运行时计算 MD5 参与比对
-            "banned_image_files": [],
-            # ====== 撤回消息历史（对齐 astrbot_plugin_batchrecall，修复 #122） ======
-            "max_message_history": 50,
-            # ====== 踢人自动撤回该成员近期消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） ======
-            "kick_recall_enabled": False,
-            "kick_recall_count": 10,
-            # ====== 语音转文字违规检测（#128） ======
-            "voice_check_enabled": False,
-            "voice_check_provider_id": "",
-            "voice_asr_endpoint": "",
-            "voice_asr_api_key": "",
-            "voice_asr_model": "",
-            "voice_check_timeout": 15,
-        }
+    @staticmethod
+    def _extract_runtime_maps(source, target: dict) -> dict:
+        """把 source 中属于运行时映射的键（dict 类型）合并进 target 并返回。"""
+        if isinstance(source, dict):
+            for key in _RUNTIME_MAP_KEYS:
+                value = source.get(key)
+                if isinstance(value, dict):
+                    target[key] = value
+        return target
 
-    def load_config(self) -> dict:
-        default_config = self._get_default_config()
+    def _load_runtime_maps(self) -> dict:
+        """加载运行时动态映射（group_overrides / groups / pending_join_requests）。
+
+        这些映射以群号 / 消息ID 为键、由群内指令动态增删，**不能**放进框架配置：
+        AstrBotConfig 加载时会调用 check_config_integrity，把未在 _conf_schema.json
+        声明的子键判为冗余并删除（内存与磁盘文件一起被清空）。
+        因此单独存 data/plugin_data/group_admin/runtime.json。
+
+        首次升级若不存在 runtime.json，则从旧版 config.json 迁移一次，并把旧文件
+        备份为 .migrated.bak，避免过期数据在下次启动时反覆盖新数据。
+        """
+        # 迁移旧版 过几个版本记得删除
+        maps = {key: {} for key in _RUNTIME_MAP_KEYS}
+        if self.runtime_path.exists():
+            return self._extract_runtime_maps(self.load_json(self.runtime_path, {}), maps)
+
+        maps = self._extract_runtime_maps(self.load_json(self.config_path, {}), maps)
+        self.save_json(self.runtime_path, maps)
         if self.config_path.exists():
             try:
-                with open(self.config_path, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                    for key, value in default_config.items():
-                        if key not in saved:
-                            saved[key] = value
-                    if "groups" not in saved:
-                        saved["groups"] = {}
-                    return saved
+                self.config_path.rename(
+                    self.config_path.with_name(self.config_path.name + ".migrated.bak")
+                )
+                logger.info(
+                    "[群管插件] 已把旧版 config.json 的运行时配置迁移到 runtime.json。"
+                )
             except Exception as e:
-                logger.error(f"加载配置文件失败: {e}")
-                return default_config
-        return default_config
+                logger.error(f"备份旧配置文件失败: {e}")
+        return maps
+
+    def _runtime_map(self, key: str) -> dict:
+        """取运行时动态映射（缺键时懒创建）；改动后需调用 save_config() 落盘。"""
+        value = self._runtime_maps.get(key)
+        if not isinstance(value, dict):
+            value = {}
+            self._runtime_maps[key] = value
+        return value
 
     def save_config(self):
+        """保存配置（两个存储目标，缺一不可）。
+
+        - 运行时动态映射（group_overrides / groups / pending_join_requests）→ runtime.json，
+          原子写入见 save_json()；
+        - 其余全局键 → 官方 AstrBotConfig.save_config()，与 WebUI 共用
+          data/config/<插件>_config.json，重载/重启后依然生效。
+
+        说明：框架在加载带 _conf_schema.json 的插件时必定以 config=<AstrBotConfig>
+        注入（star_manager 中 AstrBotConfig(config_path=..., schema=...)），故直接调用
+        官方接口，不再做「无 save_config() 时另存本地文件」的假落盘分支。
+        """
         with _CFG_LOCK:
-            self.save_json(self.config_path, self.config)
+            self.save_json(self.runtime_path, self._runtime_maps)
+            self.config.save_config()
 
     def _mutate_group_list(self, group_id: str, key: str, op: str, value: str) -> tuple:
         """群 list 配置的原子读-改-写（review#192 race-condition）。
@@ -319,13 +241,42 @@ class GroupAdminPlugin(Star):
 
     # ===================== 工具方法 =====================
 
+    def _config_list(self, key: str) -> list:
+        """读取配置中的列表项，统一兜底「键缺失 / 值为 None / 类型错误」→ 空列表。"""
+        value = self.config.get(key)
+        return value if isinstance(value, list) else []
+
+    def _warn_if_group_scope_empty(self):
+        """启动告警：群范围类列表留空 = 在【全部群】生效（#192 语义变更）。
+
+        `enabled_groups` 留空（且无历史 `violation_enabled_groups`）时，违规检测会在
+        所有群开启；`auto_recall_enabled_groups` 留空时，Bot 发言自动撤回同样全群生效。
+        这两点容易踩坑，故每次启动提示一次（最多两条，不会刷屏）。
+        """
+        enabled_groups = self._config_list("enabled_groups")
+        legacy_violation_groups = self._config_list("violation_enabled_groups")
+        auto_recall_groups = self._config_list("auto_recall_enabled_groups")
+
+        if not enabled_groups and not legacy_violation_groups:
+            logger.warning(
+                "[IMPORTANT][群管插件] enabled_groups 为空：按 #192 新语义，违规检测"
+                "（含刷屏/图片AI等）将在【全部群】启用。如需限定范围，请配置 "
+                "enabled_groups 列表，或通过 group_overrides 将指定群 enabled_groups 设为 false。"
+            )
+        if not auto_recall_groups:
+            logger.warning(
+                "[IMPORTANT][群管插件] auto_recall_enabled_groups 为空：按 #192 新语义，"
+                "Bot 发言自动撤回将在【全部群】生效（命中 auto_recall_keywords 时）。"
+                "如需限定范围，请配置该列表。"
+            )
+
     def _is_authorized(self, raw: dict, user_id: str = "") -> bool:
         """是否具备插件管理权限：仅 QQ 群管理员 + QQ 群主。"""
         return self._is_group_admin_or_owner(raw)
 
     def get_group_setting(self, group_id: str, key: str, default=None):
         """按群读取配置项，先查 group_overrides[群号][key]，否则用全局配置/默认值。"""
-        overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
+        overrides = self._runtime_map("group_overrides").get(str(group_id), {})
         if key in overrides:
             return overrides[key]
         return self.config.get(key, default)
@@ -356,7 +307,7 @@ class GroupAdminPlugin(Star):
         # review#192 race-condition：setdefault 首次创建也加锁，
         # 避免并发首建同 (group_id,key) 产生多个空 list 互相覆盖；RLock 可重入
         with _CFG_LOCK:
-            overrides = self.config.setdefault("group_overrides", {})
+            overrides = self._runtime_map("group_overrides")
             gconf = overrides.setdefault(str(group_id), {})
             value = gconf.setdefault(key, [])
             if not isinstance(value, list):
@@ -367,7 +318,7 @@ class GroupAdminPlugin(Star):
     def _set_group_override(self, group_id: str, key: str, value) -> None:
         """按群覆盖写入单个配置项并持久化（#192 owner：管理指令直接按群生效）。"""
         with _CFG_LOCK:
-            overrides = self.config.setdefault("group_overrides", {})
+            overrides = self._runtime_map("group_overrides")
             overrides.setdefault(str(group_id), {})[key] = value
             self.save_config()
 
@@ -1396,7 +1347,7 @@ class GroupAdminPlugin(Star):
         3. 兼容旧 violation_enabled_groups 列表
         4. owner 09-16 拍板：留空 = 不启用（安全默认）；启用需显式配置列表或按群 bool
         """
-        overrides = self.config.get("group_overrides", {}).get(str(group_id), {})
+        overrides = self._runtime_map("group_overrides").get(str(group_id), {})
         v = overrides.get("enabled_groups")
         if isinstance(v, bool):
             return v
@@ -4141,7 +4092,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("此指令只能在群聊中使用")
             return
         group_id = str(raw.get("group_id"))
-        gconf = self.config.get("group_overrides", {}).get(group_id, {})
+        gconf = self._runtime_map("group_overrides").get(group_id, {})
         if not gconf:
             yield event.plain_result("本群未设置任何覆盖（全部使用全局默认）")
             return
@@ -4158,7 +4109,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("只有插件管理员可执行此操作")
             return
         group_id = str(raw.get("group_id"))
-        gconf = self.config.get("group_overrides", {}).get(group_id, {})
+        gconf = self._runtime_map("group_overrides").get(group_id, {})
         if key:
             if key not in gconf:
                 yield event.plain_result(f"本群未设置 {key}")
@@ -4167,8 +4118,9 @@ class GroupAdminPlugin(Star):
             self.save_config()
             yield event.plain_result(f"已清除本群 {key} 覆盖")
         else:
-            if group_id in self.config.get("group_overrides", {}):
-                del self.config["group_overrides"][group_id]
+            overrides = self._runtime_map("group_overrides")
+            if group_id in overrides:
+                del overrides[group_id]
                 self.save_config()
             yield event.plain_result("已清除本群所有覆盖")
 
@@ -4185,7 +4137,7 @@ class GroupAdminPlugin(Star):
             f"rank_top_n: {c.get('rank_top_n', 10)}",
         ]
         if group_id:
-            overrides = self.config.get("group_overrides", {}).get(group_id, {})
+            overrides = self._runtime_map("group_overrides").get(group_id, {})
             lines.extend([
                 f"本群 title_admins: {', '.join(map(str, self.get_group_setting(group_id, 'title_admins', []))) or '空'}",
                 f"本群 group_admin_admins: {', '.join(self._effective_group_admin_admins(group_id)) or '空'}",
@@ -4199,7 +4151,11 @@ class GroupAdminPlugin(Star):
 
     def _dup_face_enabled(self, group_id: str) -> bool:
         """#196：重复表情包撤回是否启用（按群 bool 覆盖 > 全局开关）。"""
-        ov = self.config.get("group_overrides", {}).get(str(group_id), {}).get("dup_face_recall_enabled")
+        ov = (
+            self._runtime_map("group_overrides")
+            .get(str(group_id), {})
+            .get("dup_face_recall_enabled")
+        )
         if isinstance(ov, bool):
             return ov
         return bool(self.config.get("dup_face_recall_enabled", False))
@@ -4309,7 +4265,7 @@ class GroupAdminPlugin(Star):
         reply_id = self._get_reply_id(event)
         has_permission = self._is_authorized(raw, user_id)
         if reply_id and has_permission:
-            pending = self.config.get("pending_join_requests", {})
+            pending = self._runtime_map("pending_join_requests")
             info = pending.get(str(reply_id))
             if info:
                 msg_text = self._extract_text(raw)
@@ -4367,8 +4323,9 @@ class GroupAdminPlugin(Star):
         # 入群欢迎
         if raw.get("post_type") == "notice" and raw.get("notice_type") == "group_increase":
             group_id = str(raw.get("group_id"))
-            if self.config.get("groups", {}).get(group_id, {}).get("welcome_enabled", False):
-                welcome = self.config["groups"][group_id].get("welcome_message", "欢迎 {at} 加入本群！")
+            welcome_conf = self._runtime_map("groups").get(group_id, {})
+            if welcome_conf.get("welcome_enabled", False):
+                welcome = welcome_conf.get("welcome_message", "欢迎 {at} 加入本群！")
                 content = welcome.replace("{at}", f"@{raw.get('user_id')}")
                 await self._send(event, self._build_text(content))
             return
@@ -4480,7 +4437,7 @@ class GroupAdminPlugin(Star):
                 # 暂存 flag 等待引用回复
                 sent_id = await self._send_group_text(event, group_id, notify_text)
                 if sent_id:
-                    pending = self.config.setdefault("pending_join_requests", {})
+                    pending = self._runtime_map("pending_join_requests")
                     pending[str(sent_id)] = {"flag": flag, "group_id": group_id, "user_id": user_id}
                     self.save_config()
                     # #205：全局开关关闭时不发管理员通知
