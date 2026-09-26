@@ -502,6 +502,35 @@ class GroupAdminPlugin(Star):
                 return True
         return bool(result)
 
+    def _describe_action_failure(self, result, action: str) -> str:
+        """#242: 把 OneBot 失败响应解析为可读原因，区分未实现/参数不匹配/权限不足/其他。"""
+        if result is None:
+            return f"当前 OneBot 实现可能不支持此 API（{action} 无可用调用通路）"
+        if isinstance(result, str):
+            return (result.strip() or f"{action} 调用失败")[:100]
+        if isinstance(result, dict):
+            retcode = result.get("retcode")
+            message = str(result.get("message") or result.get("msg") or
+                          result.get("wording") or "").strip()
+            low = message.lower()
+            # 无 bot 直调通路且其它调用方式都失败：等价于当前实现不支持此 API
+            if "无可用调用通路" in message:
+                return f"当前 OneBot 实现可能不支持此 API（{action} 无可用调用通路）"
+            # 先判断标签相关：如"标签不存在/群标签不在预置列表"等
+            if any(k in low for k in ("tag", "label")) or "标签" in message:
+                return "当前 OneBot 实现仅允许添加预置列表中的群标签"
+            if retcode == 10002 or any(
+                    k in low for k in ("not support", "unsupported", "not implement",
+                                       "未实现", "不支持", "不存在")):
+                return "当前 OneBot 实现可能不支持此 API"
+            if any(k in low for k in ("permission", "denied", "forbidden", "不允许")) \
+                    or "权限" in message or retcode in (1200,):
+                return "权限不足（部分实现要求群主身份才能添加群标签）"
+            if message:
+                return f"后端返回：{message[:80]}"
+            return f"调用失败(retcode={retcode})"
+        return f"{action} 调用失败"
+
     async def _execute_action(self, event: AstrMessageEvent, action: str, return_raw: bool = False, **params):
         """调用 OneBot API。
         优先尝试 event.bot.call_action（AstrBot 推荐方式），
@@ -555,6 +584,34 @@ class GroupAdminPlugin(Star):
                 except Exception as e:
                     logger.error(f"调用 event.{action} 失败: {e}")
         return None if return_raw else False
+
+    async def _call_onebot_raw(self, event: AstrMessageEvent, action: str, **params):
+        """#242: 以原始响应调用 OneBot action，区分"调用失败"与"无可用通路"。
+        aiocqhttp 的 call_action 成功时只返回 data 字段（set 类 action 的 data
+        多为 null，即 None），失败时抛 ActionFailed（e.result 含 retcode/wording）；
+        而 _execute_action 会吞掉异常并返回 None，失败与成功无法区分。这里直调
+        bot.call_action 把失败响应收进字典；无 bot 直调通路时回退 _execute_action，
+        此时返回 None 视为无可用调用通路。"""
+        # 参数转换：group_id / user_id / message_id 转为 int（OneBot 要求）
+        for k in ("group_id", "user_id", "message_id"):
+            if k in params and isinstance(params[k], str) and params[k].isdigit():
+                params[k] = int(params[k])
+
+        bot = getattr(event, "bot", None)
+        call = getattr(bot, "call_action", None)
+        if callable(call):
+            try:
+                return await call(action, **params)
+            except Exception as e:
+                result = getattr(e, "result", None)
+                if isinstance(result, dict):
+                    return result
+                return {"status": "failed", "retcode": -1, "wording": str(e)}
+        # 无 bot 直调通路：回退 _execute_action，None 视为无可用调用通路
+        result = await self._execute_action(event, action, return_raw=True, **params)
+        if result is None:
+            return {"status": "failed", "retcode": -1, "wording": "无可用调用通路"}
+        return result
 
     def _get_reply_id(self, event: AstrMessageEvent):
         """提取被引用/回复的消息 ID。优先从 message_obj，回退 raw message 字段。"""
@@ -2722,17 +2779,42 @@ class GroupAdminPlugin(Star):
                 await self._load_history_from_api(event, group_id)
                 snapshot = await self._get_history_snapshot(event, group_id, self_msg_id)
             candidates = [m for m in snapshot if m[3] == str(target_qq)][:n]
-            recalled = 0
+            # #240: 逐条撤回之间加间隔，避免高频 delete_msg 触发 OneBot 实现限流导致偶发少撤回
+            recalled, expired, failed = 0, 0, 0
             for m in candidates:
                 ok, err = await self._do_recall(event, m[0])
                 if ok:
                     recalled += 1
                     self._remove_message_from_history(group_id, m[0])
-                elif "已撤回" in err:
+                elif "已撤回" in err or "超时" in err:
+                    # retcode=1200：消息已被他人撤回或超过 OneBot 约 2 分钟的撤回时限
+                    expired += 1
                     self._remove_message_from_history(group_id, m[0])
+                else:
+                    failed += 1
+                    # 消息已不存在（幽灵消息，重撤回返回"不存在"类错误）：清出本地历史，
+                    # 避免后续候选/编号继续命中，造成少撤回
+                    if any(k in err for k in ("不存在", "未找到", "没找到")) or any(
+                            k in err.lower() for k in ("not found", "not exist", "no such")):
+                        self._remove_message_from_history(group_id, m[0])
+                await asyncio.sleep(0.3)
             if recalled:
+                msg = f"撤回成功（{recalled} 条，用户 {target_qq}）"
+                if expired:
+                    msg += f"，{expired} 条已撤回或超过 2 分钟无法撤回"
+                if failed:
+                    msg += f"，{failed} 条撤回失败"
+                if len(candidates) < n:
+                    msg += f"，历史可撤回消息仅 {len(candidates)}/{n} 条"
                 if recall_notice:
-                    yield event.plain_result(f"撤回成功（{recalled} 条，用户 {target_qq}）")
+                    yield event.plain_result(msg)
+            elif expired:
+                yield event.plain_result(
+                    f"撤回失败：找到 {len(candidates)} 条消息，均已被撤回或超过 2 分钟"
+                    "（OneBot 撤回时限约 2 分钟）")
+            elif candidates:
+                yield event.plain_result(
+                    f"撤回失败：找到 {len(candidates)} 条消息，均撤回失败")
             else:
                 yield event.plain_result("撤回失败，未找到该用户的可撤回消息")
             return
@@ -2757,17 +2839,40 @@ class GroupAdminPlugin(Star):
             if not snapshot:
                 yield event.plain_result("撤回失败：本地历史为空，无可撤回消息。")
                 return
-            recalled = 0
+            recalled, expired, failed = 0, 0, 0
             for m in snapshot[:n]:
                 ok, err = await self._do_recall(event, m[0])
                 if ok:
                     recalled += 1
                     self._remove_message_from_history(group_id, m[0])
-                elif "已撤回" in err:
+                elif "已撤回" in err or "超时" in err:
+                    # retcode=1200：消息已被他人撤回或超过 OneBot 约 2 分钟的撤回时限
+                    expired += 1
                     self._remove_message_from_history(group_id, m[0])
+                else:
+                    failed += 1
+                    # 幽灵消息清理：重撤回会返回"不存在"类错误，清出本地历史避免持续占用候选
+                    if any(k in err for k in ("不存在", "未找到", "没找到")) or any(
+                            k in err.lower() for k in ("not found", "not exist", "no such")):
+                        self._remove_message_from_history(group_id, m[0])
+                await asyncio.sleep(0.3)
             if recalled:
+                msg = f"撤回成功（{recalled} 条）"
+                if expired:
+                    msg += f"，{expired} 条已撤回或超过 2 分钟无法撤回"
+                if failed:
+                    msg += f"，{failed} 条撤回失败"
+                if len(snapshot) < n:
+                    msg += f"，历史可撤回消息仅 {len(snapshot)}/{n} 条"
                 if recall_notice:
-                    yield event.plain_result(f"撤回成功（{recalled} 条）")
+                    yield event.plain_result(msg)
+            elif expired:
+                yield event.plain_result(
+                    f"撤回失败：找到 {len(snapshot[:n])} 条消息，均已被撤回或超过 2 分钟"
+                    "（OneBot 撤回时限约 2 分钟）")
+            elif snapshot[:n]:
+                yield event.plain_result(
+                    f"撤回失败：找到 {len(snapshot[:n])} 条消息，均撤回失败")
             else:
                 yield event.plain_result("撤回失败，未找到可撤回消息")
             return
@@ -3397,9 +3502,21 @@ class GroupAdminPlugin(Star):
         if len(text) > 20:
             yield event.plain_result("标签过长（最多20字符）")
             return
-        ok = await self._execute_action(event, "set_group_tag",
-                                        group_id=group_id, tag=text)
-        yield event.plain_result(f"已添加群标签「{text}」" if ok else "添加群标签失败（当前 OneBot 实现可能不支持此 API）")
+        # #242: 不同 OneBot 实现的参数名不一致（tag= 或 tags=），先按 tag= 调用，
+        # 失败再用 tags=[text] 兼容重试，并拆分失败原因便于定位
+        result = await self._call_onebot_raw(event, "set_group_tag",
+                                             group_id=group_id, tag=text)
+        if not self._action_result_success(result):
+            retry = await self._call_onebot_raw(event, "set_group_tag",
+                                                group_id=group_id, tags=[text])
+            if self._action_result_success(retry):
+                result = retry
+        if self._action_result_success(result):
+            yield event.plain_result(f"已添加群标签「{text}」")
+            return
+        logger.warning(f"添加群标签失败: group={group_id} tag={text} result={result}")
+        yield event.plain_result(
+            f"添加群标签失败：{self._describe_action_failure(result, 'set_group_tag')}")
 
     # #162: /添加违禁图片 — 引用图片消息加入违禁图列表（群管/群主）
     @filter.command("添加违禁图片", "引用图片消息加入违禁图列表")
