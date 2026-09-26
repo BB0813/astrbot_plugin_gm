@@ -222,8 +222,15 @@
     "profanity_ban_duration": {
         "description": "骂人禁言时长（秒）",
         "type": "int",
-        "hint": "推荐按群覆盖。",
+        "hint": "推荐按群覆盖。命中违禁词硬清单时使用该时长；AI 判骂人时若给出严重程度且命中下方分级表，则优先用分级时长（#243）。",
         "default": 600
+    },
+    "profanity_ban_duration_severity": {
+        "description": "AI 判骂人按严重程度分级禁言时长（秒，#243）",
+        "type": "dict",
+        "items": {},
+        "hint": "AI 检测提示词会要求模型同时返回 severity（mild/medium/severe），命中本表则按级别取禁言秒数；模型未返回或返回非法值时回退 profanity_ban_duration（行为与旧版一致）。支持按群覆盖：group_overrides[群号][profanity_ban_duration_severity]。",
+        "default": {"mild": 180, "medium": 600, "severe": 1800}
     },
     "political_keywords": {
         "description": "涉政关键词列表（全局硬清单，#204）",

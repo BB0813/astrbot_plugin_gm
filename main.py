@@ -3,13 +3,19 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.message_components import Plain, At
 
+# #246：event.send 只接受 MessageChain（AstrBot 4.28 起会直接访问 .chain），
+# 若 MessageChain 取不到就退化为传 list，会抛 `'list' object has no attribute 'chain'`。
+# 官方导出路径是 astrbot.api.event，需放在最前；后两个仅为老版本兼容兜底。
 try:
-    from astrbot.api.message import MessageChain
+    from astrbot.api.event import MessageChain
 except ImportError:
     try:
-        from astrbot.api.message_components import MessageChain
+        from astrbot.api.message import MessageChain
     except ImportError:
-        MessageChain = None
+        try:
+            from astrbot.api.message_components import MessageChain
+        except ImportError:
+            MessageChain = None
 
 import json
 import os
@@ -60,7 +66,10 @@ class GroupAdminPlugin(Star):
         self.reports_path = self.data_dir / "reports.json"
         self.config = self.load_config()
         # #196：重复表情包检测的近期_seen 缓存（内存态，不持久化）
+        # key 为 (群号, 发送者QQ)，#239 起按发送者隔离，避免跨用户误撤回
         self._dup_face_seen: dict = {}
+        # #238：每个群最近处理过的 message_id，用于丢弃重复投递的同一消息
+        self._dup_face_last_mid: dict = {}
         # 合并 AstrBot 框架注入的 WebUI 配置（修复 #180）。
         # AstrBot star_manager 会尝试以 config=<AstrBotConfig> 实例化插件；旧版插件
         # __init__ 不接收该参数，会被框架 except 退回只传 context，导致 WebUI 面板配置
@@ -197,6 +206,11 @@ class GroupAdminPlugin(Star):
             "profanity_check_enabled": True,
             "profanity_use_ai": True,
             "profanity_ban_duration": 600,
+            # #243：AI 判骂人时按严重程度分级禁言（秒）；命中分级表用对应值，
+            # 未返回/非法严重度则回退 profanity_ban_duration
+            "profanity_ban_duration_severity": {
+                "mild": 180, "medium": 600, "severe": 1800,
+            },
             "profanity_keywords": [
                 "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
                 "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
@@ -453,17 +467,63 @@ class GroupAdminPlugin(Star):
                 segs = chain
             else:
                 segs = []
-            for seg in segs:
-                # 兼容不同的 Image 表示
-                if isinstance(seg, dict):
-                    if seg.get("type") == "image":
-                        return seg.get("data", {}).get("url") or seg.get("data", {}).get("file", "")
-                    continue
-                if getattr(seg, "type", None) == "image":
-                    return getattr(seg, "url", "") or getattr(seg, "file", "")
+            return self._pick_image_url(segs)
         except Exception as e:
             logger.error(f"提取图片URL失败: {e}")
         return ""
+
+    @staticmethod
+    def _pick_image_url(segs) -> str:
+        """从消息段列表中取出第一张图片的 url/file。"""
+        for seg in segs or []:
+            # 兼容不同的 Image 表示
+            if isinstance(seg, dict):
+                if seg.get("type") == "image":
+                    data = seg.get("data") or {}
+                    return data.get("url") or data.get("file") or ""
+                continue
+            if getattr(seg, "type", None) == "image":
+                return getattr(seg, "url", "") or getattr(seg, "file", "")
+        return ""
+
+    async def _extract_reply_image_url(self, event: AstrMessageEvent) -> str:
+        """#230：从被引用（回复）的消息里提取图片。
+
+        `/改群头像` 等指令要求"引用图片消息"，但图片在**被引用**的那条消息里，
+        旧实现只看当前消息链，所以永远提示"请引用一条图片消息"。
+        这里通过 get_msg 拉取被引用消息后再取图。
+        """
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            return ""
+        ok, res = await self._call_action_fallback(event, ("get_msg",),
+                                                   message_id=int(reply_id))
+        if not ok or not isinstance(res, dict):
+            # 回退：AstrBot 部分适配器会把被引用消息直接挂在 reply 段上
+            return self._pick_image_url(self._replied_segments_from_event(event))
+        data = res.get("data") if isinstance(res.get("data"), (dict, list)) else res
+        segs = data.get("message") if isinstance(data, dict) else data
+        url = self._pick_image_url(segs)
+        if url:
+            return url
+        return self._pick_image_url(self._replied_segments_from_event(event))
+
+    def _replied_segments_from_event(self, event: AstrMessageEvent):
+        """兼容直接从当前消息链的 reply/quote 段里取被引用消息内容（部分适配器会内联）。"""
+        chain = getattr(event.message_obj, "message", None) or getattr(event, "message", None)
+        segs = getattr(chain, "chain", chain) if chain is not None else []
+        if not isinstance(segs, (list, tuple)):
+            return []
+        out = []
+        for seg in segs:
+            if isinstance(seg, dict) and seg.get("type") in ("reply", "quote"):
+                data = seg.get("data") or {}
+                inner = data.get("message") or data.get("content")
+                if isinstance(inner, list):
+                    out.extend(inner)
+                elif isinstance(data.get("url"), str) and data.get("url"):
+                    out.append({"type": "image", "data": {"url": data["url"]}})
+        return out
 
     def _build_text(self, text: str, at: str = None):
         if at:
@@ -476,6 +536,8 @@ class GroupAdminPlugin(Star):
                 if MessageChain is not None:
                     await event.send(MessageChain(message_list))
                 else:
+                    # 理论上不会走到（依赖缺失），保留兜底并告警便于排查 #246
+                    logger.warning("MessageChain 不可用，尝试以原始列表发送消息")
                     await event.send(message_list)
                 return True
         except Exception as e:
@@ -503,7 +565,7 @@ class GroupAdminPlugin(Star):
         return bool(result)
 
     def _describe_action_failure(self, result, action: str) -> str:
-        """#242: 把 OneBot 失败响应解析为可读原因，区分未实现/参数不匹配/权限不足/其他。"""
+        """把 OneBot 失败响应解析为可读原因，区分未实现/未知 action/预置限制/权限不足/其他。"""
         if result is None:
             return f"当前 OneBot 实现可能不支持此 API（{action} 无可用调用通路）"
         if isinstance(result, str):
@@ -516,16 +578,20 @@ class GroupAdminPlugin(Star):
             # 无 bot 直调通路且其它调用方式都失败：等价于当前实现不支持此 API
             if "无可用调用通路" in message:
                 return f"当前 OneBot 实现可能不支持此 API（{action} 无可用调用通路）"
-            # 先判断标签相关：如"标签不存在/群标签不在预置列表"等
-            if any(k in low for k in ("tag", "label")) or "标签" in message:
-                return "当前 OneBot 实现仅允许添加预置列表中的群标签"
+            # #245：协议端没有这个 action（如 NapCat/Lagrange 返回 "unknown action"）
+            if any(k in low for k in ("unknown action", "unknown method", "no such action",
+                                      "action not found", "unimplemented")):
+                return f"当前 OneBot 实现不支持 {action} 这个接口"
             if retcode == 10002 or any(
                     k in low for k in ("not support", "unsupported", "not implement",
-                                       "未实现", "不支持", "不存在")):
-                return "当前 OneBot 实现可能不支持此 API"
+                                       "未实现", "不支持")):
+                return f"当前 OneBot 实现可能不支持此 API（{action}）"
+            # 群标签类失败（协议端仅允许预置列表中的标签）
+            if any(k in low for k in ("group tag", "tag not", "label")) or "标签" in message:
+                return "当前 OneBot 实现仅允许添加预置列表中的群标签"
             if any(k in low for k in ("permission", "denied", "forbidden", "不允许")) \
                     or "权限" in message or retcode in (1200,):
-                return "权限不足（部分实现要求群主身份才能添加群标签）"
+                return f"权限不足（{action} 需要更高权限，如群主/管理员身份）"
             if message:
                 return f"后端返回：{message[:80]}"
             return f"调用失败(retcode={retcode})"
@@ -612,6 +678,20 @@ class GroupAdminPlugin(Star):
         if result is None:
             return {"status": "failed", "retcode": -1, "wording": "无可用调用通路"}
         return result
+
+    async def _call_action_fallback(self, event: AstrMessageEvent, actions, **params):
+        """按顺序尝试多个候选 action，返回 (是否成功, 最后一个原始响应)。
+
+        #232：旧实现用「返回 None 才回退」，而 _execute_action 失败返回的是 False，
+        回退分支永远不可达，导致始终提示「不支持此 API」。这里统一用原始响应判定。
+        用于各家 OneBot 实现 action 名不一致的场景（set_group_todo / kick / 加群审核等）。
+        """
+        last = None
+        for action in actions:
+            last = await self._call_onebot_raw(event, action, **params)
+            if self._action_result_success(last):
+                return True, last
+        return False, last
 
     def _get_reply_id(self, event: AstrMessageEvent):
         """提取被引用/回复的消息 ID。优先从 message_obj，回退 raw message 字段。"""
@@ -1062,7 +1142,14 @@ class GroupAdminPlugin(Star):
                                           group_id=group_id, user_id=qq, duration=0)
 
     async def _kick_member(self, event: AstrMessageEvent, group_id: str, qq: str):
-        return await self._execute_action(event, "kick", group_id=group_id, user_id=qq)
+        """踢出群成员。OneBot v11 标准接口为 set_group_kick（#211：
+        旧实现只调用的 kick 并非标准 action，协议端返回 unknown action 导致"踢出全部失败"）。"""
+        ok, res = await self._call_action_fallback(
+            event, ("set_group_kick", "kick"), group_id=group_id, user_id=qq)
+        if not ok:
+            logger.warning(f"[踢人] 失败 group={group_id} user={qq}: "
+                           f"{self._describe_action_failure(res, 'set_group_kick')}")
+        return ok
 
     async def _recall_user_recent_msgs(self, event: AstrMessageEvent, group_id: str, user_id: str, count: int) -> int:
         """撤回某用户在群内最近 count 条消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian）。
@@ -1108,8 +1195,22 @@ class GroupAdminPlugin(Star):
                                           group_id=group_id, file=file)
 
     async def _handle_group_request(self, event: AstrMessageEvent, flag: str, approve: bool, reason: str = ""):
-        return await self._execute_action(event, "handle_group_request",
-                                          flag=flag, approve=approve, reason=reason)
+        """同意/拒绝加群申请，返回是否真正成功（#228）。
+
+        OneBot v11 标准接口为 set_group_add_request（需 flag + sub_type + approve），
+        旧实现只调用的 handle_group_request 并非标准 action；且调用方从不校验返回值，
+        导致协议端拒绝后仍回复"已同意"。这里按顺序回退并返回真实结果。
+        """
+        params = {"flag": flag, "approve": approve}
+        if not approve and reason:
+            params["reason"] = reason
+        ok, res = await self._call_action_fallback(
+            event, ("set_group_add_request", "handle_group_request"),
+            sub_type="add", **params)
+        if not ok:
+            logger.warning(f"[加群审核] 处理失败 flag={flag} approve={approve}: "
+                           f"{self._describe_action_failure(res, 'set_group_add_request')}")
+        return ok
 
     # ===================== 消息收发辅助 =====================
 
@@ -1258,8 +1359,13 @@ class GroupAdminPlugin(Star):
         role = raw.get("sender", {}).get("role", "") if isinstance(raw, dict) else ""
         return role in {"admin", "owner"}
 
-    def _moderation_ban_duration(self, group_id: str, kind: str) -> int:
-        """按违规类型读取对应禁言时长（秒）。"""
+    def _moderation_ban_duration(self, group_id: str, kind: str, severity: str = "") -> int:
+        """按违规类型读取对应禁言时长（秒）。
+
+        #243：AI 判骂人可给出严重程度（mild/medium/severe），命中
+        `profanity_ban_duration_severity` 分级表则按级别取时长；
+        未给出或表内没有该级别时回退 `profanity_ban_duration`（行为与旧版一致）。
+        """
         key_map = {
             "image": "ban_duration",
             "spam": "spam_ban_duration",
@@ -1274,6 +1380,15 @@ class GroupAdminPlugin(Star):
             "ad": 600, "link": 600, "group_promotion": 600,
             "banned_image": 600,
         }
+        if severity and key == "profanity_ban_duration":
+            table = self.get_group_setting(group_id, "profanity_ban_duration_severity", None)
+            if isinstance(table, dict):
+                raw_v = table.get(severity)
+                try:
+                    if raw_v is not None:
+                        return max(1, int(raw_v))
+                except (TypeError, ValueError):
+                    pass
         try:
             v = int(self.get_group_setting(group_id, key, default_map.get(kind, 600)) or 600)
         except (TypeError, ValueError):
@@ -1288,6 +1403,7 @@ class GroupAdminPlugin(Star):
         user_id: str,
         message_id: str,
         reason: str = "",
+        severity: str = "",
     ) -> bool:
         """处理一条违规：撤回 + 按配置时长禁言 + 计数 + 通知。"""
         ok_any = False
@@ -1296,7 +1412,7 @@ class GroupAdminPlugin(Star):
             recalled = await self._recall_message(event, str(message_id))
             ok_any = recalled
         # 2. 禁言
-        duration = self._moderation_ban_duration(group_id, kind)
+        duration = self._moderation_ban_duration(group_id, kind, severity)
         muted = await self._mute_member(event, group_id, user_id, duration)
         if muted:
             ok_any = True
@@ -1349,9 +1465,12 @@ class GroupAdminPlugin(Star):
                 await self._send(event, self._build_text(
                     f"你因触碰涉政关键词(词语∶{pol_kw})被禁言{minutes}分钟"))
                 return True
-            if await self._check_profanity(msg_text, event, group_id, user_id):
+            profanity_violated, profanity_severity = await self._check_profanity(
+                msg_text, event, group_id, user_id)
+            if profanity_violated:
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
-                await self._handle_violation(event, "profanity", group_id, user_id, mid)
+                await self._handle_violation(event, "profanity", group_id, user_id, mid,
+                                             severity=profanity_severity)
                 return True
             if await self._check_ad(msg_text, event, group_id, user_id):
                 mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
@@ -1385,7 +1504,8 @@ class GroupAdminPlugin(Star):
                 if not text:
                     continue
                 violated_kind = None
-                if await self._check_profanity(text, event, group_id, user_id):
+                profanity_hit, _severity = await self._check_profanity(text, event, group_id, user_id)
+                if profanity_hit:
                     violated_kind = "profanity"
                 elif await self._check_ad(text, event, group_id, user_id):
                     violated_kind = "ad"
@@ -1690,11 +1810,17 @@ class GroupAdminPlugin(Star):
                     kws.append(k)
         return kws
 
-    async def _check_profanity(self, msg_text: str, event, group_id: str, user_id: str) -> bool:
+    async def _check_profanity(self, msg_text: str, event, group_id: str, user_id: str):
+        """检测骂人：返回 (是否违规, 严重程度)。
+
+        #243：严重程度（mild/medium/severe）仅在 AI 判定骂人时由模型返回；
+        关键词硬清单命中不给分级（沿用 profanity_ban_duration），
+        调用方无分级时按固定时长处理。
+        """
         if not self.get_group_setting(group_id, "profanity_check_enabled", True):
-            return False
+            return False, ""
         if not msg_text:
-            return False
+            return False, ""
         # #207：违禁词为硬清单，优先匹配且不受 AI 模式影响；
         # 来源统一由 _collect_profanity_keywords 收敛（按群/全局/旧 violation_keywords）
         keywords = self._collect_profanity_keywords(group_id)
@@ -1702,23 +1828,32 @@ class GroupAdminPlugin(Star):
         for kw in keywords:
             if str(kw).lower() and str(kw).lower() in text_lower:
                 logger.warning(f"[群违规检测] 命中违禁词 用户 {user_id}: {kw}")
-                return True
+                return True, ""
         use_ai = bool(self.get_group_setting(group_id, "profanity_use_ai", True))
         if use_ai and aiohttp is not None:
             api_endpoint = self.config.get("api_endpoint", "")
             api_key = self.config.get("api_key", "")
             if api_endpoint:
-                is_profanity, reason = await self._check_profanity_with_ai(api_endpoint, api_key, msg_text)
+                is_profanity, reason, severity = await self._check_profanity_with_ai(
+                    api_endpoint, api_key, msg_text)
                 if is_profanity:
-                    logger.warning(f"[群违规检测] 骂人 用户 {user_id} {reason}")
-                    return True
-        return False
+                    logger.warning(f"[群违规检测] 骂人 用户 {user_id} {reason} 严重度={severity or '未给出'}")
+                    return True, severity
+        return False, ""
 
     async def _check_profanity_with_ai(self, api_endpoint: str, api_key: str, msg_text: str):
+        """AI 判骂人，返回 (是否骂人, 原因, 严重程度)。
+
+        #243：提示词要求模型同时输出 severity（mild/medium/severe），解析做容错——
+        字段缺失或非法时返回空串，由调用方回退到固定禁言时长（等价旧行为）。
+        """
         model_name = self.config.get("model_name", "gpt-4o")
         prompt = (
             "你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n"
-            "请仅返回 JSON：{\"is_profanity\": true/false, \"reason\": \"简短原因\"}"
+            "同时评估严重程度 severity，取值范围只能是 mild / medium / severe"
+            "（mild=轻度调侃，medium=明显侮辱，severe=极端恶毒或人身威胁）。\n"
+            "请仅返回 JSON：{\"is_profanity\": true/false, \"reason\": \"简短原因\", "
+            "\"severity\": \"mild|medium|severe\"}"
         )
         payload = {
             "model": model_name,
@@ -1735,7 +1870,7 @@ class GroupAdminPlugin(Star):
                 async with session.post(api_endpoint, json=payload, headers=headers, timeout=timeout) as resp:
                     if resp.status != 200:
                         logger.error(f"[群违规检测] 骂人 AI 失败: {resp.status}")
-                        return False, ""
+                        return False, "", ""
                     data = await resp.json()
             content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
             content = content.strip()
@@ -1745,10 +1880,24 @@ class GroupAdminPlugin(Star):
             match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
             text = match.group() if match else content
             obj = json.loads(text)
-            return bool(obj.get("is_profanity", False)), str(obj.get("reason", ""))
+            return (bool(obj.get("is_profanity", False)), str(obj.get("reason", "")),
+                    self._normalize_severity(obj.get("severity")))
         except Exception as e:
             logger.error(f"[群违规检测] 骂人 AI 解析失败: {e}")
-            return False, ""
+            return False, "", ""
+
+    @staticmethod
+    def _normalize_severity(value) -> str:
+        """#243：把模型返回的严重程度归一化；无法识别时返回空串（回退固定时长）。"""
+        if value is None:
+            return ""
+        v = str(value).strip().lower()
+        alias = {
+            "mild": "mild", "low": "mild", "轻微": "mild", "轻度": "mild", "1": "mild",
+            "medium": "medium", "moderate": "medium", "中等": "medium", "中度": "medium", "2": "medium",
+            "severe": "severe", "high": "severe", "严重": "severe", "重度": "severe", "3": "severe",
+        }
+        return alias.get(v, "")
 
     # ----- 广告 / 链接 / 群号推广 -----
 
@@ -2978,6 +3127,9 @@ class GroupAdminPlugin(Star):
             return
         image_url = self._extract_image_url(event)
         if not image_url:
+            # #230：图片在被引用的那条消息里，从引用消息中补取
+            image_url = await self._extract_reply_image_url(event)
+        if not image_url:
             yield event.plain_result("请引用一条图片消息，或在消息中附带图片")
             return
         ok = await self._set_group_avatar(event, group_id, image_url)
@@ -3243,12 +3395,14 @@ class GroupAdminPlugin(Star):
         if not reply_id:
             yield event.plain_result("请引用一条消息后发送此命令")
             return
-        ok = await self._execute_action(event, "_set_group_todo",
-                                        group_id=group_id, message_id=int(reply_id))
-        if ok is None:
-            ok = await self._execute_action(event, "set_group_todo",
-                                            group_id=group_id, message_id=int(reply_id))
-        yield event.plain_result("已设为群待办" if ok else "设置群待办失败（当前 OneBot 实现可能不支持此 API）")
+        ok, res = await self._call_action_fallback(
+            event, ("_set_group_todo", "set_group_todo"),
+            group_id=group_id, message_id=int(reply_id))
+        if ok:
+            yield event.plain_result("已设为群待办")
+        else:
+            yield event.plain_result(
+                f"设置群待办失败：{self._describe_action_failure(res, 'set_group_todo')}")
 
     # #139: /取消群待办 — 引用消息取消群待办（群管/群主）
     @filter.command("取消群待办", "引用消息取消群待办")
@@ -3266,12 +3420,14 @@ class GroupAdminPlugin(Star):
         if not reply_id:
             yield event.plain_result("请引用一条群待办消息后发送此命令")
             return
-        ok = await self._execute_action(event, "_delete_group_todo",
-                                        group_id=group_id, message_id=int(reply_id))
-        if ok is None:
-            ok = await self._execute_action(event, "delete_group_todo",
-                                            group_id=group_id, message_id=int(reply_id))
-        yield event.plain_result("已取消群待办" if ok else "取消群待办失败（当前 OneBot 实现可能不支持此 API）")
+        ok, res = await self._call_action_fallback(
+            event, ("_delete_group_todo", "delete_group_todo"),
+            group_id=group_id, message_id=int(reply_id))
+        if ok:
+            yield event.plain_result("已取消群待办")
+        else:
+            yield event.plain_result(
+                f"取消群待办失败：{self._describe_action_failure(res, 'delete_group_todo')}")
 
     # #150: /加群申请待处理 — 查看待处理加群申请（群管/群主）
     @filter.command("加群申请待处理", "查看本群未处理的加群申请列表")
@@ -3285,28 +3441,44 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("只有群管理员或群主可执行此操作")
             return
         group_id = str(raw.get("group_id"))
-        result = await self._execute_action(event, "get_group_apply_list",
-                                            group_id=group_id, return_raw=True)
-        if not result:
-            yield event.plain_result("获取加群申请列表失败（当前 OneBot 实现可能不支持此 API）")
+        # #235：get_group_apply_list 并非 OneBot v11 标准接口，多数协议端返回 unknown action。
+        # 标准接口为 get_group_system_msg（返回 join_requests），部分实现另提供
+        # get_group_apply_list / get_group_add_request_list，按顺序回退。
+        ok, result = await self._call_action_fallback(
+            event, ("get_group_system_msg", "get_group_apply_list",
+                    "get_group_add_request_list"))
+        if not ok:
+            yield event.plain_result(
+                f"获取加群申请列表失败：{self._describe_action_failure(result, 'get_group_system_msg')}")
             return
+        # aiocqhttp 的 call_action 成功时只返回 data 本身，部分框架会再包一层 data
+        if isinstance(result, dict) and isinstance(result.get("data"), (dict, list)):
+            data = result["data"]
+        else:
+            data = result if isinstance(result, (dict, list)) else {}
+        # 标准接口把待处理申请放在 join_requests；兼容直接返回列表的实现
+        raw_list = data.get("join_requests") if isinstance(data, dict) else data
+        if not isinstance(raw_list, list):
+            raw_list = []
         applies = []
-        if isinstance(result, dict):
-            data = result.get("data") or result
-            if isinstance(data, list):
-                for a in data:
-                    if not isinstance(a, dict):
-                        continue
-                    # 只显示未处理的
-                    sub_type = a.get("sub_type", "")
-                    if sub_type not in ("add", ""):
-                        continue
-                    uid = str(a.get("user_id", ""))
-                    nick = a.get("nickname", "")
-                    comment = a.get("comment", "")
-                    ts = a.get("time", 0)
-                    time_str = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "未知"
-                    applies.append(f"{uid}（{nick}）| {time_str}\n验证消息: {comment or '无'}")
+        for a in raw_list:
+            if not isinstance(a, dict):
+                continue
+            # 各家字段名不同：go-cqhttp 用 requester_uin/message，其它实现用 user_id/comment
+            if a.get("checked"):
+                continue
+            item_gid = str(a.get("group_id", "") or "")
+            if item_gid and item_gid != group_id:
+                continue
+            sub_type = a.get("sub_type", "")
+            if sub_type not in ("add", ""):
+                continue
+            uid = str(a.get("user_id") or a.get("requester_uin") or "")
+            nick = a.get("nickname") or a.get("requester_nick") or ""
+            comment = a.get("comment") or a.get("message") or ""
+            ts = a.get("time", 0)
+            time_str = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "未知"
+            applies.append(f"{uid}（{nick}）| {time_str}\n验证消息: {comment or '无'}")
         if not applies:
             yield event.plain_result("本群当前无待处理的加群申请")
             return
@@ -3968,6 +4140,11 @@ class GroupAdminPlugin(Star):
         仅撤回新发的重复消息（旧消息可能已超撤回窗口）；
         图片指纹优先 md5，回退 file/url（review#213 unstable-fingerprint）；
         seen 仅保留最近 30 分钟指纹，避免陈旧指纹误判（review#213 unbounded-growth）。
+
+        #239：指纹按「群 + 发送者」隔离——旧实现只按群记录，导致
+        B 发出与 A 相同的表情包会被当成 A 的重复而误撤回。
+        #238：同一 message_id 只处理一次，避免消息被重复投递时把
+        "自己"当成重复（仅发一次却被撤回）。
         """
         if not self._dup_face_enabled(group_id):
             return
@@ -3986,7 +4163,17 @@ class GroupAdminPlugin(Star):
                     keys.append(("image", str(fp)))
         if not keys:
             return
-        seen = self._dup_face_seen.setdefault(group_id, [])
+        sender_id = str(raw.get("user_id", ""))
+        mid = raw.get("message_id")
+        # #238：同一条消息只判定一次（重复投递不再被当成"重复表情包"）
+        if mid is not None:
+            last_mid = self._dup_face_last_mid.get(group_id)
+            if str(last_mid) == str(mid):
+                return
+            self._dup_face_last_mid[group_id] = mid
+        # 同一消息内的相同指纹去重，避免自身重复计入
+        keys = list(dict.fromkeys(keys))
+        seen = self._dup_face_seen.setdefault((group_id, sender_id), [])
         # 清理超过 30 分钟的陈旧指纹
         seen[:] = [it for it in seen if now - it[1] <= 1800]
         old_keys = {it[0] for it in seen}
@@ -3997,11 +4184,10 @@ class GroupAdminPlugin(Star):
         if len(seen) > 200:
             del seen[: len(seen) - 200]
         if dup:
-            mid = raw.get("message_id")
-            if mid:
+            if mid is not None:
                 ok, err = await self._do_recall(event, mid)
                 if ok:
-                    logger.info(f"[重复表情包] 群 {group_id} 撤回重复表情包消息 {mid}")
+                    logger.info(f"[重复表情包] 群 {group_id} 用户 {sender_id} 撤回重复表情包消息 {mid}")
                 else:
                     logger.warning(f"[重复表情包] 群 {group_id} 撤回 {mid} 失败: {err}")
 
@@ -4074,8 +4260,15 @@ class GroupAdminPlugin(Star):
                             custom = parts[1].strip() if len(parts) > 1 else ""
                             reject_reason = custom if custom else self.get_group_setting(
                                 group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
-                        await self._handle_group_request(event, info["flag"], approve, reject_reason)
+                        # #228：接口调用失败时不能回复"已同意/已拒绝"
+                        handled = await self._handle_group_request(
+                            event, info["flag"], approve, reject_reason)
                         result = "拉黑" if blacklist else ("同意" if approve else "拒绝")
+                        if not handled:
+                            yield event.plain_result(
+                                f"处理 {info['user_id']} 的加群申请失败（协议端拒绝或接口不可用，"
+                                f"详见日志），请稍后重试")
+                            return
                         # 清理已处理的记录
                         del pending[str(reply_id)]
                         self.save_config()
@@ -4138,8 +4331,12 @@ class GroupAdminPlugin(Star):
             # #194：黑名单用户直接拒绝（无需检查关键词/门禁）
             bl_list = self.get_group_setting(group_id, "blacklisted_users", [])
             if bl_list and str(user_id) in [str(x) for x in bl_list]:
-                await self._handle_group_request(event, flag, False, "黑名单用户")
-                yield event.plain_result(f"已拒绝 {user_id} 的加群申请（黑名单用户）")
+                handled = await self._handle_group_request(event, flag, False, "黑名单用户")
+                yield event.plain_result(
+                    f"已拒绝 {user_id} 的加群申请（黑名单用户）" if handled else
+                    f"拒绝 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
+                if not handled:
+                    return
                 await self._notify_admins(
                     f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
                     f"验证消息: {comment}\n"
@@ -4152,8 +4349,12 @@ class GroupAdminPlugin(Star):
             reject_reason = self.get_group_setting(group_id, "join_reject_reason", "不满足加群条件") or "不满足加群条件"
             if enabled and violation_keywords and any(kw in comment for kw in violation_keywords):
                 detail_reason = f"您的加群申请有词触碰到本群违禁词，自动拒绝（{reject_reason}）"
-                await self._handle_group_request(event, flag, False, detail_reason)
-                yield event.plain_result(f"已拒绝 {user_id} 的加群申请（含违禁词）")
+                handled = await self._handle_group_request(event, flag, False, detail_reason)
+                yield event.plain_result(
+                    f"已拒绝 {user_id} 的加群申请（含违禁词）" if handled else
+                    f"拒绝 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
+                if not handled:
+                    return
                 await self._notify_admins(
                     f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
                     f"验证消息: {comment}\n"
@@ -4164,8 +4365,12 @@ class GroupAdminPlugin(Star):
 
             # 命中关键词：同意 + 通知管理员 + 群内通知（#186）
             if enabled and join_approve_keywords and any(kw in comment for kw in join_approve_keywords):
-                await self._handle_group_request(event, flag, True, "命中关键词自动同意")
-                yield event.plain_result(f"已同意 {user_id} 的加群申请（命中关键词）")
+                handled = await self._handle_group_request(event, flag, True, "命中关键词自动同意")
+                yield event.plain_result(
+                    f"已同意 {user_id} 的加群申请（命中关键词）" if handled else
+                    f"同意 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
+                if not handled:
+                    return
                 # #205：全局开关关闭时不发申请/审批通知
                 if self.config.get("join_request_notify_enabled", True):
                     await self._notify_admins(
@@ -4215,6 +4420,17 @@ class GroupAdminPlugin(Star):
                             f"已在群内发送提醒，请管理员引用回复同意/拒绝",
                             group_id=group_id,
                         )
+            else:
+                # #226：未开启群内提醒时，全局开关打开也必须通知管理员，
+                # 否则普通加群申请不会有任何通知（旧实现只在此 if 内发送）。
+                if self.config.get("join_request_notify_enabled", True):
+                    nickname = await self._get_user_nickname(event, user_id)
+                    await self._notify_admins(
+                        f"[加群请求] {nickname}（{user_id}）申请加入群 {group_id}\n"
+                        f"验证消息: {comment or '无'}\n"
+                        f"可用 /加群申请待处理 查看，或在群内开启提醒后引用回复同意/拒绝",
+                        group_id=group_id,
+                    )
 
     @filter.command("新人加群申请通知", "开关新人加群申请通知（on/off，全局配置，#205）")
     async def toggle_join_request_notify_cmd(self, event: AstrMessageEvent, value: str = ""):

@@ -124,12 +124,19 @@
 |--------|------|---------|
 | 图片违规 | AI 视觉模型（OpenAI Vision 兼容）分析色情 / 擦边，可设检测阈值（默认 0.7） | 开（需配置 `api_endpoint` / `api_key` / `model_name`） |
 | 刷屏 | 时间窗口（默认 10 秒）内消息数超过阈值（默认 5 条）判定刷屏 | 开 |
-| 骂人 | AI 识别（`profanity_use_ai=true` 默认）或关键词匹配双模式，关键词可动态增删 | 开 |
+| 骂人 | AI 识别（`profanity_use_ai=true` 默认）或关键词匹配双模式，关键词可动态增删；AI 判定时可按严重程度分级禁言（`profanity_ban_duration_severity`，#243） | 开 |
 | 广告 | 预设 24 个常见广告关键词（加群 / 加微信 / 代练 / 外挂 / 刷钻等），可动态增删 | 开 |
 | 链接 | 匹配 http/https/www 等链接格式 | 关（`link_check_enabled`） |
 | 群号推广 | 推广关键词（进群 / 加群 / 群号 / 入群 / 拉群 / 建群）+ 识别 5-12 位群号 | 开 |
 
 > 白名单用户（`whitelist_users`）不受检测限制；管理员默认豁免（`admin_bypass`）；检测到违规后可选择群内通知（`notify_on_violation`）。
+
+**AI 骂人分级禁言（#243）**
+
+- 仅在 `profanity_use_ai=true` 且配置了 `api_endpoint` 时生效：提示词会要求模型在判定结果中额外返回 `severity`（`mild` / `medium` / `severe`）。
+- 命中 `profanity_ban_duration_severity` 分级表时按级别取禁言秒数（默认 mild 180 / medium 600 / severe 1800）；模型未返回、返回非法值或表中缺少该级别时，回退 `profanity_ban_duration`（默认 600 秒），与旧版行为一致。
+- 关键词硬清单（`profanity_keywords` / 按群骂人关键词）命中不参与分级，仍用 `profanity_ban_duration`。
+- 按群覆盖：编辑 `group_overrides[群号]["profanity_ban_duration_severity"]`（该表暂无独立指令）；`group_overrides` 不在 WebUI 配置页展示，见上方「按群覆盖」说明。
 
 ### 加群申请自动审核
 
@@ -196,6 +203,7 @@ pip install astrbot_plugin_group_admin
 | `max_message_history` | int | `50` | 每群内存缓存的撤回消息历史条数（用于 /撤回 N 与 /撤回自身 N） |
 | `join_reject_reason` | string | `"不满足加群条件"` | 加群申请自动拒绝时展示的默认理由（管理员可通过「拒绝 理由」自定义） |
 | `join_audit_enabled` | bool | `true` | 加群申请自动审核总开关（关闭后违禁词/关键词自动审核都跳过；管理员手动审核不受影响） |
+| `profanity_ban_duration_severity` | dict | `{"mild":180,"medium":600,"severe":1800}` | AI 判骂人按严重程度分级禁言时长（秒，#243；模型未返回/返回非法时回退 `profanity_ban_duration`；可按群覆盖） |
 | `group_admin_admins` | list | `[]` | 可设置/取消群管理的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
