@@ -182,7 +182,7 @@ pip install astrbot_plugin_group_admin
 
 插件提供以下可配置项（在 AstrBot 配置文件 / WebUI 中设置，或用上方「按群覆盖配置」的独立指令按群覆盖）：
 
-> ⚠️ **默认行为（#192，owner 09-16 拍板：安全默认）**：`enabled_groups` **留空 = 不启用**（启用需显式配置列表：`*` / `all` / 群号，或按群 bool 覆盖）；`auto_recall_enabled_groups` 留空且无关键词 = 不启用，配了关键词未配 enabled 时兼容全群启用（#170）。需单独关闭的群用 `group_overrides` / `enabled_groups` 按群覆盖为 false。
+> ⚠️ **默认行为（#192 owner 拍板，统一为「留空 = 全群启用」）**：`enabled_groups` **留空 = 全群启用**（违规检测，含刷屏/图片 AI 等；需收窄时配置列表：`*` / `all` / 群号，或按群 bool 覆盖）；`auto_recall_enabled_groups` **留空 = 全群启用**（命中 `auto_recall_keywords` 时才实际撤回，未配关键词则无命中）。旧配置 `violation_enabled_groups` 非空时仍按旧列表判定（迁移兼容，老用户行为不漂移）。需单独关闭的群用 `group_overrides` / `enabled_groups` 按群覆盖为 false。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
@@ -247,9 +247,9 @@ pip install astrbot_plugin_group_admin
 }
 ```
 
-按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`admin_bypass`、`notify_on_violation`)+ 权限细分（`title_admins`、`group_admin_admins`、`kick_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
+按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`blacklisted_users`（#194）、`admin_bypass`、`notify_on_violation`)+ 权限细分（`group_admin_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
-> `group_overrides` 内部存储项不再展示在 WebUI 配置页（#192 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护。
+> `group_overrides` 为**内部存储项，已从配置项 schema 移除、不在 WebUI 配置页展示**（#192/#219 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护，也可直接编辑配置文件。
 
 ### 图片 AI 审核配置
 
@@ -339,11 +339,11 @@ pip install astrbot_plugin_group_admin
 1. **插件管理员**：拥有使用所有管理命令的权限。识别方式：
    - QQ 群管理员
    - QQ 群主
-2. **专项权限管理员**：`group_admin_admins`（可设/取消群管理）等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。`title_admins`、`kick_admins` 不再提供 WebUI 全局配置项（#188），仍支持按群覆盖（在 `group_overrides` 中配置 `title_admins` / `kick_admins` 列表）。
+2. **专项权限管理员**：仅保留 `group_admin_admins`（可设置/取消群管理）一项，名单中的人执行 `/设管理` `/取消管理` 时不受群管理身份限制（#219 owner 09-18：头衔/踢人专项权限列表已移除，相应操作回归插件管理员）。
 
-`group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高）。
+`group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高；群内用 `/添加管理管理 QQ` / `/删除管理管理 QQ` 维护；旧命令 `/添加插件管理` `/删除插件管理` 保留为兼容别名，同样只操作该名单）。
 
-> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
+> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需向非群管理员用户授予设管理权限，使用 `group_admin_admins` 列表。
 
 ---
 
@@ -380,7 +380,7 @@ pip install astrbot_plugin_group_admin
 # 修改自己的群昵称
 /改昵称 新名字
 
-# 本群独立启用违规检测（在配置文件 group_overrides 或 WebUI 中设置）
+# 本群独立启用违规检测（写 group_overrides，WebUI 不展示，见上方按群覆盖说明）
 # /开关违规通知 on
 /开关语音检测 on
 
@@ -484,7 +484,7 @@ astrbot_plugin_gm/
 ## 命令与默认行为补充说明（review#192）
 
 - 命令别名：群友昵称（alias 别人昵称/群昵称/设群昵称/设群友昵称）、自己昵称（alias 改群昵称/改昵称）、群名（alias 群名称/改群名/修改群名）。若与 AstrBot 内置或其它插件同名指令冲突，请使用主名或停用冲突插件。
-- 默认行为（owner 09-16 拍板）：`enabled_groups` 留空 = 不启用；启用需显式配置列表（* / all / 群号）或按群 bool 覆盖。`auto_recall_enabled_groups` 留空且无关键词 = 不启用；配了关键词未配 enabled 时兼容全群启用（#170）。
+- 默认行为（owner 拍板，统一为「留空 = 全群启用」）：`enabled_groups` 留空 = 全群启用；需收窄时配置列表（* / all / 群号）或按群 bool 覆盖。`auto_recall_enabled_groups` 留空 = 全群启用（`auto_recall_keywords` 为空则无命中、不产生撤回）。旧配置 `violation_enabled_groups` 非空时仍按旧列表判定（迁移兼容）。
 
 ## 涉政关键词与骂人关键词配置（#204）
 
