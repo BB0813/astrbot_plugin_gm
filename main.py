@@ -105,7 +105,8 @@ class GroupAdminPlugin(Star):
         # 撤回消息历史（对齐 astrbot_plugin_batchrecall，修复 #117 #118 #122）：
         # 结构：message_history[group_id] -> list[(message_id, content_preview, timestamp, sender_id, sender_name, is_bot)]
         # 最新消息在列表最前面，编号从 1 开始；仅记录本进程启动后经过监听的消息，重启前历史不可恢复。
-        # 用户发送的插件指令消息不记录（避免编号偏移）；bot 自身消息在 after_message_sent 中记录。
+        # 用户发送的插件指令消息不记录（避免编号偏移）；bot 自身消息由 after_message_sent
+        # 回查 get_group_msg_history 后记录（框架不会把已发送消息的 ID 回传给插件）。
         self.message_history: dict = {}
         self.max_history = max(1, int(self.config.get("max_message_history", 50) or 50))
 
@@ -4476,52 +4477,81 @@ class GroupAdminPlugin(Star):
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent):
-        """Bot 自身发言后：若命中关键词配置则自动撤回（#46）。"""
-        raw = self._get_raw_message(event)
-        if not raw:
-            return
-        group_id = str(raw.get("group_id", ""))
+        """Bot 自身发言后：记录撤回历史，并在命中关键词时自动撤回（#46）。
+
+        ⚠️ 关键点：本钩子回调时 event 的 raw_message 依旧是【用户发来的那条消息】，
+        并不包含 bot 刚发出的消息内容与 ID。因此：
+          1. 判断 bot 发言必须取 event.get_result().chain（respond 阶段在调用本钩子
+             之后才 clear_result），否则关键词永远匹配不到 bot 的发言；
+          2. 撤回所需的 message_id 需回查 OneBot get_group_msg_history 中发送者为
+             自身的最新消息（框架不会把已发送消息的 ID 回传给插件）。
+        """
+        group_id = self._get_group_id_or_none(event)
         if not group_id:
             return
 
-        # 撤回消息历史：记录 bot 自身发言，用于 /撤回自身 / /撤回 N（#117 #118 #122）。
-        # 与自动关键词撤回无关，所有群组都需要写入。
-        bot_msg_id = raw.get("message_id")
-        bot_user_id = raw.get("user_id") or raw.get("self_id")
-        if bot_msg_id and bot_user_id:
-            content = self._extract_message_content_from_segments(raw.get("message") or [])
-            sender = raw.get("sender") or {}
-            bot_name = sender.get("card") or sender.get("nickname", "") or "机器人"
+        # 1) 本次实际发送的消息链 → 纯文本（用于关键词匹配）
+        result = event.get_result()
+        chain = getattr(result, "chain", None) if result is not None else None
+        bot_text = self._extract_text_from_chain(chain)
+
+        # 2) 回查机器人刚发送的消息，拿到真实 message_id
+        bot_messages = await self._fetch_recent_bot_messages(event, group_id)
+        if bot_messages:
+            newest_id, newest_text, newest_preview, newest_time = bot_messages[0]
+            # 撤回消息历史：记录 bot 自身发言，用于 /撤回自身 / /撤回 N（#117 #118 #122）
             self._add_message_to_history(
-                group_id, bot_msg_id, content, str(bot_user_id), bot_name,
-                is_bot=True, msg_time=raw.get("time"),
+                group_id, newest_id,
+                newest_preview or newest_text or "[无文本内容]",
+                self._get_self_id(event) or "bot", "机器人",
+                is_bot=True, msg_time=newest_time,
+            )
+        elif bot_text:
+            logger.debug(
+                "[自动撤回] 未能从群消息历史定位机器人刚发送的消息 ID"
+                "（当前 OneBot 实现可能不在 get_group_msg_history 中返回机器人自身消息）"
             )
 
+        # 3) 关键词自动撤回
         enabled = self.get_group_setting(group_id, "auto_recall_enabled_groups", [])
         keywords = self.get_group_setting(group_id, "auto_recall_keywords", [])
         # #170：兼容只配 keywords 未配 enabled_groups 的场景，配了关键词则默认全群启用
         # owner 09-16：留空且无关键词 = 不启用（安全默认）
         if not enabled and keywords:
             enabled = ["*"]
-        if not enabled:
+        if not enabled or not keywords:
             return
         if "*" not in [str(x) for x in enabled] and "all" not in [str(x) for x in enabled]:
             if group_id not in [str(x) for x in enabled]:
                 return
-        if not keywords:
+        # 优先用本次发送链的完整文本判断；无文本（纯图片/语音等）时回退到最新 bot 发言
+        match_text = bot_text or (bot_messages[0][1] if bot_messages else "")
+        if not match_text:
             return
-        msg_text = self._extract_text(raw)
-        if not msg_text:
+        if not any(kw in match_text for kw in keywords):
             return
-        if any(kw in msg_text for kw in keywords):
-            msg_id = raw.get("message_id")
-            if msg_id:
-                # #202：记录撤回结果，失败时给出原因，避免静默
-                ok, err = await self._do_recall(event, msg_id)
-                if ok:
-                    logger.info(f"[自动撤回] 命中关键词，已撤回 bot 消息 {msg_id}")
-                else:
-                    logger.warning(f"[自动撤回] 撤回 bot 消息 {msg_id} 失败: {err}")
+
+        # 只撤回本次发送窗口内的 bot 消息，避免误伤更早的历史发言
+        now = int(time.time())
+        recent = [m for m in bot_messages if not m[3] or now - m[3] <= 30]
+        matched = [m for m in recent if m[1] and any(kw in m[1] for kw in keywords)]
+        targets = matched[:3] if matched else recent[:1]
+        if not targets:
+            logger.warning(
+                "[自动撤回] 已命中关键词，但未能定位机器人刚发送的消息 ID，撤回失败："
+                "当前 OneBot 实现可能不在 get_group_msg_history 中返回机器人自身消息"
+            )
+            return
+        for msg_id, _text, _preview, _t in targets:
+            # #202：记录撤回结果，失败时给出原因，避免静默
+            ok, err = await self._do_recall(event, msg_id)
+            if ok:
+                self._remove_message_from_history(group_id, msg_id)
+                logger.info(f"[自动撤回] 命中关键词，已撤回 bot 消息 {msg_id}")
+            elif "已撤回" in err or "超时" in err:
+                self._remove_message_from_history(group_id, msg_id)
+            else:
+                logger.warning(f"[自动撤回] 撤回 bot 消息 {msg_id} 失败: {err}")
 
     def _extract_text(self, raw: dict) -> str:
         parts = []
@@ -4529,6 +4559,93 @@ class GroupAdminPlugin(Star):
             if isinstance(seg, dict) and seg.get("type") == "text":
                 parts.append(seg.get("data", {}).get("text", ""))
         return "".join(parts)
+
+    @staticmethod
+    def _extract_text_from_chain(chain) -> str:
+        """从待发送/已发送的消息链（AstrBot 消息组件列表）提取纯文本。
+
+        用于自动撤回关键词匹配：after_message_sent 中只能从 event.get_result().chain
+        拿到 bot 本次实际发出的内容。兼容组件对象（Plain.text）与 dict 两种形态。
+        """
+        parts = []
+        for comp in chain or []:
+            text = getattr(comp, "text", None)
+            if text is None and isinstance(comp, dict):
+                data = comp.get("data")
+                text = data.get("text") if isinstance(data, dict) else None
+            if text:
+                parts.append(str(text))
+        return "".join(parts)
+
+    @staticmethod
+    def _plain_text_from_segments(segments) -> str:
+        """从 OneBot 消息段列表提取纯文本（不截断，用于关键词匹配）。"""
+        parts = []
+        for seg in segments or []:
+            if isinstance(seg, dict) and seg.get("type") == "text":
+                parts.append(str(seg.get("data", {}).get("text", "")))
+        return "".join(parts)
+
+    @staticmethod
+    def _parse_history_messages(result) -> list:
+        """兼容多种返回结构，从 get_group_msg_history 返回值中取出消息列表。"""
+        if isinstance(result, list):
+            return [m for m in result if isinstance(m, dict)]
+        if not isinstance(result, dict):
+            return []
+        data = result.get("data")
+        if isinstance(data, dict) and isinstance(data.get("messages"), list):
+            return [m for m in data["messages"] if isinstance(m, dict)]
+        if isinstance(data, list):
+            return [m for m in data if isinstance(m, dict)]
+        if isinstance(result.get("messages"), list):
+            return [m for m in result["messages"] if isinstance(m, dict)]
+        return []
+
+    async def _fetch_recent_bot_messages(self, event, group_id: str, count: int = 10) -> list:
+        """回查群消息历史中机器人自己最近发送的消息。
+
+        AstrBot 的 after_message_sent 事件不提供已发送消息的 message_id
+        （event.get_result() 只有消息链），故通过 OneBot get_group_msg_history 反查，
+        用于写入撤回历史与自动撤回定位消息。这里用 _call_onebot_raw 调用，
+        后端不支持该 API 时不会刷错误日志（ActionFailed 被收进返回值），仅返回空列表。
+
+        返回按时间倒序的 [(message_id, 纯文本, 内容预览, 时间戳), ...]。
+        """
+        gid = str(group_id or "")
+        bot_self_id = self._get_self_id(event)
+        if not gid or not bot_self_id:
+            return []
+        result = await self._call_onebot_raw(
+            event, "get_group_msg_history", group_id=gid, count=max(1, int(count)),
+        )
+        if not self._action_result_success(result):
+            logger.debug(
+                f"[自动撤回] get_group_msg_history 调用失败({gid})："
+                f"{self._describe_action_failure(result, 'get_group_msg_history')}"
+            )
+            return []
+        bot_messages = []
+        for msg in self._parse_history_messages(result):
+            sender_id = str((msg.get("sender") or {}).get("user_id", "") or "")
+            if sender_id != bot_self_id:
+                continue
+            msg_id = msg.get("message_id")
+            if not msg_id:
+                continue
+            segments = msg.get("message") or []
+            try:
+                msg_time = int(msg.get("time", 0) or 0)
+            except (TypeError, ValueError):
+                msg_time = 0
+            bot_messages.append((
+                str(msg_id),
+                self._plain_text_from_segments(segments),
+                self._extract_message_content_from_segments(segments),
+                msg_time,
+            ))
+        bot_messages.sort(key=lambda m: m[3], reverse=True)
+        return bot_messages[:max(1, int(count))]
 
     def _should_notify_mute(self, group_id: str, ok: bool) -> bool:
         """判断禁言/解禁/宵禁/禁我 是否需要回复。
