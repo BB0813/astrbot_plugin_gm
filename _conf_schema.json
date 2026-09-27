@@ -63,13 +63,6 @@
         "hint": "兼容旧配置。新配置建议使用 enabled_groups 列表，或在群内 /设置群配置 enabled_groups true / false。",
         "default": []
     },
-    "violation_keywords": {
-        "description": "旧版违规关键词列表（兼容项，已由 profanity_keywords 取代）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "兼容 WebUI 历史入口：骂人检测会同时读取 profanity_keywords 与本列表。新配置建议使用 profanity_keywords。",
-        "default": []
-    },
     "report_notify_admins": {
         "description": "接收举报通知的插件管理员QQ号列表（推荐按群覆盖）",
         "type": "list",
@@ -82,12 +75,6 @@
         "type": "int",
         "hint": "推荐按群覆盖：/设置群配置 rank_top_n N。",
         "default": 10
-    },
-    "mute_kick_threshold": {
-        "description": "禁言次数达到阈值后自动踢出（0 表示关闭，全局默认）",
-        "type": "int",
-        "hint": "同一成员在群内被禁言次数达到该阈值即自动踢出。推荐按群覆盖：group_overrides[群号][mute_kick_threshold]，或群内 /设踢人阈值 N。",
-        "default": 0
     },
     "join_approve_keywords": {
         "description": "加群请求验证消息命中后自动同意的关键词列表（推荐按群覆盖）",
@@ -126,20 +113,6 @@
         "type": "bool",
         "hint": "关闭后所有自动审核（违禁词拒绝/关键词同意）都不生效。管理员手动审核（引用回复同意/拒绝）不受影响。推荐按群覆盖：/设置群配置 join_audit_enabled true/false。",
         "default": true
-    },
-    "title_admins": {
-        "description": "可设置/取消群头衔的专项管理员 QQ 列表（全局默认）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "在名单中的 QQ 可执行头衔相关指令，不受群管理身份限制。全局默认，按群覆盖优先级更高：group_overrides[群号][title_admins]。",
-        "default": []
-    },
-    "kick_admins": {
-        "description": "可执行踢人的专项管理员 QQ 列表（全局默认）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "在名单中的 QQ 可执行 /踢 等踢人指令，不受群管理身份限制。全局默认，按群覆盖优先级更高：group_overrides[群号][kick_admins]。",
-        "default": []
     },
     "group_admin_admins": {
         "description": "可设置/取消群管理的专项管理员 QQ 列表（全局默认，_conf_schema 全局配置）",
