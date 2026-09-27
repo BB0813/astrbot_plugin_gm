@@ -124,12 +124,21 @@
 |--------|------|---------|
 | 图片违规 | AI 视觉模型（OpenAI Vision 兼容）分析色情 / 擦边，可设检测阈值（默认 0.7） | 开（需配置 `api_endpoint` / `api_key` / `model_name`） |
 | 刷屏 | 时间窗口（默认 10 秒）内消息数超过阈值（默认 5 条）判定刷屏 | 开 |
-| 骂人 | AI 识别（`profanity_use_ai=true` 默认）或关键词匹配双模式，关键词可动态增删 | 开 |
+| 骂人 | AI 识别（`profanity_use_ai=true` 默认）或关键词匹配双模式，关键词可动态增删；AI 判定时可按严重程度分级禁言（`profanity_ban_duration_severity`，#243） | 开 |
 | 广告 | 预设 24 个常见广告关键词（加群 / 加微信 / 代练 / 外挂 / 刷钻等），可动态增删 | 开 |
 | 链接 | 匹配 http/https/www 等链接格式 | 关（`link_check_enabled`） |
 | 群号推广 | 推广关键词（进群 / 加群 / 群号 / 入群 / 拉群 / 建群）+ 识别 5-12 位群号 | 开 |
 
 > 白名单用户（`whitelist_users`）不受检测限制；管理员默认豁免（`admin_bypass`）；检测到违规后可选择群内通知（`notify_on_violation`）。
+
+**AI 骂人分级禁言（#243）**
+
+- 仅在 `profanity_use_ai=true` 且配置了 `api_endpoint` 时生效：提示词会要求模型在判定结果中额外返回 `severity`（`mild` / `medium` / `severe`）。
+- **开关 `profanity_severity_enabled`（默认开）**：关闭后一律按 `profanity_ban_duration` 固定时长处理（模型仍照常检测，只是不使用分级）；可按群覆盖。
+- 提示词可在插件配置 **`profanity_detection_prompt`** 中自定义（默认已预填内置提示词，留空同样走内置默认）。提示词里可写 `{text}` 占位符插入待检测文本；不写占位符时文本会追加在末尾。若自定义提示词不再要求返回 `severity`，则不会分级、一律按 `profanity_ban_duration` 处理。
+- 命中 `profanity_ban_duration_severity` 分级表时按级别取禁言秒数（默认 mild 180 / medium 600 / severe 1800）；模型未返回、返回非法值或表中缺少该级别时，回退 `profanity_ban_duration`（默认 600 秒），与旧版行为一致。
+- 关键词硬清单（`profanity_keywords` / 按群骂人关键词）命中不参与分级，仍用 `profanity_ban_duration`。
+- 按群覆盖：编辑 `group_overrides[群号]["profanity_ban_duration_severity"]`（该表暂无独立指令）；`group_overrides` 不在 WebUI 配置页展示，见上方「按群覆盖」说明。
 
 ### 加群申请自动审核
 
@@ -196,7 +205,11 @@ pip install astrbot_plugin_group_admin
 | `max_message_history` | int | `50` | 每群内存缓存的撤回消息历史条数（用于 /撤回 N 与 /撤回自身 N） |
 | `join_reject_reason` | string | `"不满足加群条件"` | 加群申请自动拒绝时展示的默认理由（管理员可通过「拒绝 理由」自定义） |
 | `join_audit_enabled` | bool | `true` | 加群申请自动审核总开关（关闭后违禁词/关键词自动审核都跳过；管理员手动审核不受影响） |
+| `profanity_detection_prompt` | text | 内置默认提示词（已预填） | AI 骂人检测提示词（#243；支持 `{text}` 占位符，留空用内置默认；可按群覆盖） |
+| `profanity_severity_enabled` | bool | `true` | AI 判骂人分级禁言开关（#243；关闭后一律按 `profanity_ban_duration` 固定时长；可按群覆盖） |
+| `profanity_ban_duration_severity` | dict | `{"mild":180,"medium":600,"severe":1800}` | AI 判骂人按严重程度分级禁言时长（秒，#243；模型未返回/返回非法时回退 `profanity_ban_duration`；可按群覆盖） |
 | `group_admin_admins` | list | `[]` | 可设置/取消群管理的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
+| `group_admin_admins_by_group` | dict | `{}` | **按群设置**可设置/取消群管理的专项管理员：`{"群号": ["QQ1","QQ2"]}`（命中该群用本群名单并替换全局名单；群内 `/添加管理管理` 优先级更高；值也可写 `"10001,10002"`） |
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
@@ -342,6 +355,8 @@ pip install astrbot_plugin_group_admin
 2. **专项权限管理员**：`group_admin_admins`（可设/取消群管理）等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。`title_admins`、`kick_admins` 不再提供 WebUI 全局配置项（#188），仍支持按群覆盖（在 `group_overrides` 中配置 `title_admins` / `kick_admins` 列表）。
 
 `group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高）。
+
+**按群设置名单（WebUI，#219 owner）**：`group_admin_admins_by_group` 可在插件配置里直接给每个群填名单，格式 `{"群号": ["QQ1","QQ2"]}`（值也支持 `"10001,10002"` 这种写法）。生效优先级：**群内指令维护的名单 > `group_admin_admins_by_group` 该群名单 > 全局 `group_admin_admins`**（命中即替换，不与上层合并）。群内 `/status` 可查看本群实际生效的名单。
 
 > 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
 
