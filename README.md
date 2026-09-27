@@ -246,7 +246,7 @@ pip install astrbot_plugin_group_admin
 /设置排名人数 20
 ```
 
-或在配置文件中直接编辑 `group_overrides`：
+也可在机器人停止后直接编辑数据文件 `data/plugin_data/group_admin/runtime.json`（旧版 `config.json` 的数据会在首次启动时自动迁移过来），结构如下：
 
 ```json
 {
@@ -262,7 +262,7 @@ pip install astrbot_plugin_group_admin
 
 按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`blacklisted_users`（#194）、`admin_bypass`、`notify_on_violation`)+ 权限细分（`group_admin_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
-> `group_overrides` 为**内部存储项，已从配置项 schema 移除、不在 WebUI 配置页展示**（#192/#219 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护，也可直接编辑配置文件。
+> `group_overrides` 为**内部存储项，已从配置项 schema 移除、不在 WebUI 配置页展示**（#192/#219 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护；实际存储在 `data/plugin_data/group_admin/runtime.json`，需手动修改时请先停止机器人再编辑（运行中会被插件写回覆盖）。
 
 ### 图片 AI 审核配置
 
