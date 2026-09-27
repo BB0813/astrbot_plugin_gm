@@ -31,10 +31,10 @@
         "default": []
     },
     "auto_recall_enabled_groups": {
-        "description": "启用自动撤回的群ID列表（推荐按群覆盖）",
+        "description": "启用自动撤回的群ID列表（留空 = 全群启用，#192）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "留空则默认不启用自动撤回；推荐用 /设置群配置 auto_recall_enabled_groups true 按群开启。",
+        "hint": "留空 = 全群启用（#192 owner 拍板）：Bot 发言命中 auto_recall_keywords 时在任意群撤回，keywords 为空时无命中、不产生实际撤回。非空：* / all 全启用，或精确群号。可按群覆盖单群开关：group_overrides[gid][auto_recall_enabled_groups] = false。",
         "default": []
     },
     "dup_face_recall_enabled": {
@@ -42,26 +42,6 @@
         "type": "bool",
         "hint": "开启后群内出现与近 30 分钟内相同的表情包（face id / 图片 md5→file→url 指纹）时自动撤回新消息。按群覆盖：/重复表情包撤回 开|关，或 group_overrides[gid][dup_face_recall_enabled]。",
         "default": false
-    },
-    "violation_action": {
-        "description": "违规处置动作（兼容旧配置，新流程已接管）",
-        "type": "string",
-        "hint": "none/mute/recall。新的群违规检测（图片/刷屏/骂人/广告/链接/群号推广）一律：撤回+按各自禁言时长禁言。本字段保留为兼容项。",
-        "options": ["none", "mute", "recall"],
-        "default": "none"
-    },
-    "violation_mute_minutes": {
-        "description": "违规禁言时长（分钟，兼容旧配置）",
-        "type": "int",
-        "hint": "兼容旧 violation_action=mute 配置。新流程下图片/刷屏/骂人/广告/链接/群号推广各自有独立禁言时长（见 *_ban_duration）。",
-        "default": 10
-    },
-    "violation_enabled_groups": {
-        "description": "启用违规检测的群ID列表（兼容旧配置）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "兼容旧配置。新配置建议使用 enabled_groups 列表，或在群内 /设置群配置 enabled_groups true / false。",
-        "default": []
     },
     "report_notify_admins": {
         "description": "接收举报通知的插件管理员QQ号列表（推荐按群覆盖）",
@@ -115,9 +95,9 @@
         "default": true
     },
     "group_admin_admins": {
-        "description": "可设置/取消群管理的专项管理员 QQ 列表（全局默认，_conf_schema 全局配置）",
+        "description": "可设置/取消群管理的专项管理员 QQ 列表（全局默认；#219 owner：插件配置中仅保留此一项管理员配置）",
         "type": "list",
-        "hint": "在名单中的 QQ 可执行 /设管理 与 /取消管理，不受群管理身份限制。全局默认，按群覆盖优先级更高：/设置群配置 group_admin_admins [\"12345\"]。",
+        "hint": "在名单中的 QQ 可执行 /设管理 与 /取消管理，不受群管理身份限制（#219 owner 09-18：头衔/踢人专项管理员列表已移除，相应操作回归插件管理员）。全局默认，按群覆盖优先级更高：群内 /添加管理管理 QQ、/删除管理管理 QQ。",
         "default": []
     },
     "group_admin_admins_by_group": {
@@ -125,13 +105,6 @@
         "type": "dict",
         "items": {},
         "hint": "示例：{\"123456789\": [\"10001\", \"10002\"]}。命中本表的群用该群名单（替换全局 group_admin_admins），未命中的群用全局名单；群内 /添加管理管理 /删除管理管理 维护的名单优先级更高。值可以是 JSON 数组，也可写成 \"10001,10002\"。查看某群实际生效名单：群内 /status。",
-        "default": {}
-    },
-    "group_overrides": {
-        "description": "按群独立配置覆盖：{群号: {key: value}}",
-        "type": "dict",
-        "items": {},
-        "hint": "按群覆盖配置（内部存储，由群内独立指令维护，#193 已移除 /设置群配置）。可用 key 包括：show_recall_notice、mute_notice、group_name_notice、reject_re_add、auto_recall_keywords、rank_top_n、report_notify_admins、join_approve_keywords、join_notify_admins、join_request_notify_in_group、join_reject_reason、join_audit_enabled、title_admins、group_admin_admins、kick_admins、mute_kick_threshold、enabled_groups（true/false）、spam_*、profanity_*、ad_*、link_*、link_whitelist（#195）、group_promotion_*、ban_duration、whitelist_users、blacklisted_users（#194）、admin_bypass、notify_on_violation、max_message_history、kick_recall_enabled、kick_recall_count、voice_check_enabled、banned_images。语音转文字相关配置（voice_check_provider_id、voice_asr_endpoint/api_key/model、voice_check_timeout）为全局配置，不支持按群覆盖。save_config 直接序列化整个 config dict，group_overrides 下所有 key 均完整持久化。",
         "default": {}
     },
     "api_type": {
@@ -184,10 +157,10 @@
         "default": true
     },
     "enabled_groups": {
-        "description": "启用违规检测的群号列表（推荐按群覆盖）",
+        "description": "启用违规检测的群号列表（留空 = 全群启用，#192）",
         "type": "list",
         "items": {"type": "string"},
-        "hint": "* 或 all 表示全部启用；为空则不启用；推荐按群覆盖：在群内 /设置群配置 enabled_groups true / false。",
+        "hint": "留空 = 全群启用（#192 owner 拍板）；非空：* / all 全启用，或精确群号（未命中群不启用）。可按群覆盖单群开关：group_overrides[gid][enabled_groups] = false。",
         "default": []
     },
     "spam_check_enabled": {
