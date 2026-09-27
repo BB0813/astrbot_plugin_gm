@@ -231,11 +231,17 @@
         "hint": "推荐按群覆盖。命中违禁词硬清单时使用该时长；AI 判骂人时若给出严重程度且命中下方分级表，则优先用分级时长（#243）。",
         "default": 600
     },
+    "profanity_severity_enabled": {
+        "description": "AI 判骂人按严重程度分级禁言开关（#243）",
+        "type": "bool",
+        "hint": "开启：AI 判骂人且返回严重程度时，按 profanity_ban_duration_severity 分级取禁言时长。关闭：一律按 profanity_ban_duration 固定时长处理（模型仍会检测，只是不使用分级）。推荐按群覆盖。",
+        "default": true
+    },
     "profanity_ban_duration_severity": {
         "description": "AI 判骂人按严重程度分级禁言时长（秒，#243）",
         "type": "dict",
         "items": {},
-        "hint": "AI 检测提示词会要求模型同时返回 severity（mild/medium/severe），命中本表则按级别取禁言秒数；模型未返回或返回非法值时回退 profanity_ban_duration（行为与旧版一致）。支持按群覆盖：group_overrides[群号][profanity_ban_duration_severity]。",
+        "hint": "仅在 profanity_severity_enabled 开启时生效。AI 检测提示词会要求模型同时返回 severity（mild/medium/severe），命中本表则按级别取禁言秒数；模型未返回或返回非法值时回退 profanity_ban_duration（行为与旧版一致）。支持按群覆盖：group_overrides[群号][profanity_ban_duration_severity]。",
         "default": {"mild": 180, "medium": 600, "severe": 1800}
     },
     "political_keywords": {

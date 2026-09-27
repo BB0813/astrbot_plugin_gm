@@ -221,6 +221,8 @@ class GroupAdminPlugin(Star):
             "profanity_ban_duration_severity": {
                 "mild": 180, "medium": 600, "severe": 1800,
             },
+            # #243：分级禁言开关（owner 要求）；关闭后一律按 profanity_ban_duration 固定时长
+            "profanity_severity_enabled": True,
             # #243：AI 判骂人提示词（留空用内置默认；支持 {text} 占位符）
             "profanity_detection_prompt": "",
             "profanity_keywords": [
@@ -1374,9 +1376,11 @@ class GroupAdminPlugin(Star):
     def _moderation_ban_duration(self, group_id: str, kind: str, severity: str = "") -> int:
         """按违规类型读取对应禁言时长（秒）。
 
-        #243：AI 判骂人可给出严重程度（mild/medium/severe），命中
-        `profanity_ban_duration_severity` 分级表则按级别取时长；
-        未给出或表内没有该级别时回退 `profanity_ban_duration`（行为与旧版一致）。
+        #243：AI 判骂人可给出严重程度（mild/medium/severe）。仅在开关
+        `profanity_severity_enabled`（默认开）打开、且命中
+        `profanity_ban_duration_severity` 分级表时按级别取时长；开关关闭、
+        未给出严重度或表内没有该级别时，回退 `profanity_ban_duration`
+        （开关关闭 = 完全按固定时长处理）。
         """
         key_map = {
             "image": "ban_duration",
@@ -1392,7 +1396,8 @@ class GroupAdminPlugin(Star):
             "ad": 600, "link": 600, "group_promotion": 600,
             "banned_image": 600,
         }
-        if severity and key == "profanity_ban_duration":
+        if severity and key == "profanity_ban_duration" \
+                and self.get_group_setting(group_id, "profanity_severity_enabled", True):
             table = self.get_group_setting(group_id, "profanity_ban_duration_severity", None)
             if isinstance(table, dict):
                 raw_v = table.get(severity)

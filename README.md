@@ -134,6 +134,7 @@
 **AI 骂人分级禁言（#243）**
 
 - 仅在 `profanity_use_ai=true` 且配置了 `api_endpoint` 时生效：提示词会要求模型在判定结果中额外返回 `severity`（`mild` / `medium` / `severe`）。
+- **开关 `profanity_severity_enabled`（默认开）**：关闭后一律按 `profanity_ban_duration` 固定时长处理（模型仍照常检测，只是不使用分级）；可按群覆盖。
 - 提示词可在插件配置 **`profanity_detection_prompt`** 中自定义（默认已预填内置提示词，留空同样走内置默认）。提示词里可写 `{text}` 占位符插入待检测文本；不写占位符时文本会追加在末尾。若自定义提示词不再要求返回 `severity`，则不会分级、一律按 `profanity_ban_duration` 处理。
 - 命中 `profanity_ban_duration_severity` 分级表时按级别取禁言秒数（默认 mild 180 / medium 600 / severe 1800）；模型未返回、返回非法值或表中缺少该级别时，回退 `profanity_ban_duration`（默认 600 秒），与旧版行为一致。
 - 关键词硬清单（`profanity_keywords` / 按群骂人关键词）命中不参与分级，仍用 `profanity_ban_duration`。
@@ -205,6 +206,7 @@ pip install astrbot_plugin_group_admin
 | `join_reject_reason` | string | `"不满足加群条件"` | 加群申请自动拒绝时展示的默认理由（管理员可通过「拒绝 理由」自定义） |
 | `join_audit_enabled` | bool | `true` | 加群申请自动审核总开关（关闭后违禁词/关键词自动审核都跳过；管理员手动审核不受影响） |
 | `profanity_detection_prompt` | text | 内置默认提示词（已预填） | AI 骂人检测提示词（#243；支持 `{text}` 占位符，留空用内置默认；可按群覆盖） |
+| `profanity_severity_enabled` | bool | `true` | AI 判骂人分级禁言开关（#243；关闭后一律按 `profanity_ban_duration` 固定时长；可按群覆盖） |
 | `profanity_ban_duration_severity` | dict | `{"mild":180,"medium":600,"severe":1800}` | AI 判骂人按严重程度分级禁言时长（秒，#243；模型未返回/返回非法时回退 `profanity_ban_duration`；可按群覆盖） |
 | `group_admin_admins` | list | `[]` | 可设置/取消群管理的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+） |
