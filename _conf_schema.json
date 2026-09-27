@@ -219,6 +219,12 @@
         "hint": "true: 调用 AI API 检测；false: 仅关键词匹配。",
         "default": true
     },
+    "profanity_detection_prompt": {
+        "description": "AI 骂人检测提示词（#243）",
+        "type": "text",
+        "hint": "留空使用内置默认提示词（已预填，可直接改）。提示词里可写 {text} 占位符插入待检测文本；不写占位符时文本会追加在末尾。要让模型同时输出严重程度以使用分级禁言（profanity_ban_duration_severity），请在提示词里要求返回 severity（mild/medium/severe）；未要求或返回非法值时按 profanity_ban_duration 固定时长处理。",
+        "default": "你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n同时评估严重程度 severity，取值范围只能是 mild / medium / severe（mild=轻度调侃，medium=明显侮辱，severe=极端恶毒或人身威胁）。\n请仅返回 JSON：{\"is_profanity\": true/false, \"reason\": \"简短原因\", \"severity\": \"mild|medium|severe\"}"
+    },
     "profanity_ban_duration": {
         "description": "骂人禁言时长（秒）",
         "type": "int",

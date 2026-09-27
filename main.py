@@ -36,6 +36,16 @@ except ImportError:
 # 配置写入串行化锁（review#192 race-condition）：多条同步写路径共用，防止交错写坏文件
 _CFG_LOCK = threading.RLock()
 
+# #243：AI 判骂人的内置默认提示词（可在插件配置 profanity_detection_prompt 中覆盖）
+# 支持 {text} 占位符插入待检测文本；未写占位符时待检测文本追加在末尾。
+_DEFAULT_PROFANITY_PROMPT = (
+    "你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n"
+    "同时评估严重程度 severity，取值范围只能是 mild / medium / severe"
+    "（mild=轻度调侃，medium=明显侮辱，severe=极端恶毒或人身威胁）。\n"
+    "请仅返回 JSON：{\"is_profanity\": true/false, \"reason\": \"简短原因\", "
+    "\"severity\": \"mild|medium|severe\"}"
+)
+
 
 def _parse_qq_list(text: str) -> list:
     """从文本中提取所有合法的QQ号（5-12位数字）。"""
@@ -211,6 +221,8 @@ class GroupAdminPlugin(Star):
             "profanity_ban_duration_severity": {
                 "mild": 180, "medium": 600, "severe": 1800,
             },
+            # #243：AI 判骂人提示词（留空用内置默认；支持 {text} 占位符）
+            "profanity_detection_prompt": "",
             "profanity_keywords": [
                 "傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈",
                 "你妈死了", "去你妈的", "狗日的", "王八蛋", "畜生", "杂种",
@@ -1835,29 +1847,33 @@ class GroupAdminPlugin(Star):
             api_key = self.config.get("api_key", "")
             if api_endpoint:
                 is_profanity, reason, severity = await self._check_profanity_with_ai(
-                    api_endpoint, api_key, msg_text)
+                    api_endpoint, api_key, msg_text, group_id)
                 if is_profanity:
                     logger.warning(f"[群违规检测] 骂人 用户 {user_id} {reason} 严重度={severity or '未给出'}")
                     return True, severity
         return False, ""
 
-    async def _check_profanity_with_ai(self, api_endpoint: str, api_key: str, msg_text: str):
+    async def _check_profanity_with_ai(self, api_endpoint: str, api_key: str, msg_text: str,
+                                       group_id: str = ""):
         """AI 判骂人，返回 (是否骂人, 原因, 严重程度)。
 
         #243：提示词要求模型同时输出 severity（mild/medium/severe），解析做容错——
         字段缺失或非法时返回空串，由调用方回退到固定禁言时长（等价旧行为）。
+        提示词取配置 `profanity_detection_prompt`（可按群覆盖），留空用内置默认；
+        含 `{text}` 占位符时替换为待检测文本，否则把文本追加在末尾。
         """
         model_name = self.config.get("model_name", "gpt-4o")
-        prompt = (
-            "你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n"
-            "同时评估严重程度 severity，取值范围只能是 mild / medium / severe"
-            "（mild=轻度调侃，medium=明显侮辱，severe=极端恶毒或人身威胁）。\n"
-            "请仅返回 JSON：{\"is_profanity\": true/false, \"reason\": \"简短原因\", "
-            "\"severity\": \"mild|medium|severe\"}"
-        )
+        custom_prompt = str(
+            self.get_group_setting(group_id, "profanity_detection_prompt", "") or ""
+        ).strip()
+        prompt = custom_prompt or _DEFAULT_PROFANITY_PROMPT
+        if "{text}" in prompt:
+            content_text = prompt.replace("{text}", msg_text)
+        else:
+            content_text = f"{prompt}\n\n待检测文本：{msg_text}"
         payload = {
             "model": model_name,
-            "messages": [{"role": "user", "content": f"{prompt}\n\n待检测文本：{msg_text}"}],
+            "messages": [{"role": "user", "content": content_text}],
             "max_tokens": 200,
             "temperature": 0.1,
         }
