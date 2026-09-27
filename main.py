@@ -389,9 +389,8 @@ class GroupAdminPlugin(Star):
 
         优先级：
         1. group_overrides[群号]["group_admin_admins"]（群内 /添加管理管理 等指令维护）
-        2. group_admin_admins_by_group[群号]（WebUI 按群名单，新增）
-        3. group_admin_admins（WebUI 全局名单）
-        命中即替换（不与上层合并），与插件既有「按群覆盖 > 全局」语义一致。
+        2. group_admin_admins_by_group[群号]（WebUI 按群名单）
+        命中即替换（不与上层合并），与插件既有「按群覆盖 > 按群 WebUI 名单」语义一致。
         """
         # 注意：group_overrides 已迁移到 runtime.json，#219 上游实现仍读框架配置会永远取不到
         # 群内指令写入的名单，故这里统一改走运行时映射（与 set_group_setting 写入侧一致）。
@@ -404,12 +403,12 @@ class GroupAdminPlugin(Star):
             g_list = self._normalize_qq_list_value(by_group.get(str(group_id)))
             if g_list:
                 return g_list
-        return self._normalize_qq_list_value(self.config.get("group_admin_admins"))
+        return []
 
     def has_group_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
         """设管理/取消管理权限：设管理专项名单或插件管理员（群管理员/群主）。
 
-        专项名单来源见 _effective_group_admin_admins（群内指令 > WebUI 按群名单 > WebUI 全局名单）。
+        专项名单来源见 _effective_group_admin_admins（群内指令 > WebUI 按群名单）。
         """
         uid = str(user_id)
         if uid in self._effective_group_admin_admins(group_id):

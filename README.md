@@ -208,8 +208,7 @@ pip install astrbot_plugin_group_admin
 | `profanity_detection_prompt` | text | 内置默认提示词（已预填） | AI 骂人检测提示词（#243；支持 `{text}` 占位符，留空用内置默认；可按群覆盖） |
 | `profanity_severity_enabled` | bool | `true` | AI 判骂人分级禁言开关（#243；关闭后一律按 `profanity_ban_duration` 固定时长；可按群覆盖） |
 | `profanity_ban_duration_severity` | dict | `{"mild":180,"medium":600,"severe":1800}` | AI 判骂人按严重程度分级禁言时长（秒，#243；模型未返回/返回非法时回退 `profanity_ban_duration`；可按群覆盖） |
-| `group_admin_admins` | list | `[]` | 可设置/取消群管理的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
-| `group_admin_admins_by_group` | dict | `{}` | **按群设置**可设置/取消群管理的专项管理员：`{"群号": ["QQ1","QQ2"]}`（命中该群用本群名单并替换全局名单；群内 `/添加管理管理` 优先级更高；值也可写 `"10001,10002"`） |
+| `group_admin_admins_by_group` | dict | `{}` | **按群设置**可设置/取消群管理的专项管理员：`{"群号": ["QQ1","QQ2"]}`（命中该群用本群名单；群内 `/添加管理管理` / `/删除管理管理` 优先级更高；值也可写 `"10001,10002"`） |
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
@@ -260,7 +259,7 @@ pip install astrbot_plugin_group_admin
 }
 ```
 
-按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`blacklisted_users`（#194）、`admin_bypass`、`notify_on_violation`)+ 权限细分（`group_admin_admins`、`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
+按群覆盖的可配置 key 包括：基础配置（`show_recall_notice`、`auto_recall_keywords`、`auto_recall_enabled_groups`、`rank_top_n`、`report_notify_admins`、`join_approve_keywords`、`join_notify_admins`、`join_request_notify_in_group`、`enabled_groups`）+ 违规检测全部子项（`spam_*`、`profanity_*`、`ad_*`、`link_*`、`group_promotion_*`、`ban_duration`、`whitelist_users`、`blacklisted_users`（#194）、`admin_bypass`、`notify_on_violation`)+ 权限细分（`mute_kick_threshold`）+ 撤回历史（`max_message_history`）+ 踢人清历史（`kick_recall_enabled`、`kick_recall_count`）+ 语音违规检测开关（`voice_check_enabled`）。
 > 语音转文字相关配置（`voice_check_provider_id`、`voice_asr_endpoint`、`voice_asr_api_key`、`voice_asr_model`、`voice_check_timeout`）为**全局配置**，不支持按群覆盖。
 > `group_overrides` 为**内部存储项，已从配置项 schema 移除、不在 WebUI 配置页展示**（#192/#219 owner），按群覆盖功能不受影响，仍由各管理指令（禁言时长/关键词/白名单等）维护；实际存储在 `data/plugin_data/group_admin/runtime.json`，需手动修改时请先停止机器人再编辑（运行中会被插件写回覆盖）。
 
@@ -352,13 +351,11 @@ pip install astrbot_plugin_group_admin
 1. **插件管理员**：拥有使用所有管理命令的权限。识别方式：
    - QQ 群管理员
    - QQ 群主
-2. **专项权限管理员**：仅保留 `group_admin_admins`（可设置/取消群管理）一项，名单中的人执行 `/设管理` `/取消管理` 时不受群管理身份限制（#219 owner 09-18：头衔/踢人专项权限列表已移除，相应操作回归插件管理员）。
+2. **专项权限管理员**：通过 `group_admin_admins_by_group` **按群设置**（可设置/取消群管理），名单中的人执行 `/设管理` `/取消管理` 时不受群管理身份限制（#219 owner 09-18：头衔/踢人专项权限列表已移除，相应操作回归插件管理员）。
 
-`group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高；群内用 `/添加管理管理 QQ` / `/删除管理管理 QQ` 维护；旧命令 `/添加插件管理` `/删除插件管理` 保留为兼容别名，同样只操作该名单）。
+**按群设置名单（WebUI）**：`group_admin_admins_by_group` 可在插件配置里直接给每个群填名单，格式 `{"群号": ["QQ1","QQ2"]}`（值也支持 `"10001,10002"` 这种写法）。同时可用群内指令 `/添加管理管理 QQ` / `/删除管理管理 QQ`（旧命令 `/添加插件管理` `/删除插件管理` 保留为兼容别名，同样只操作该名单）维护本群名单，其优先级高于 WebUI 名单（命中即替换，不与上层合并）。群内 `/status` 可查看本群实际生效的名单。
 
-**按群设置名单（WebUI，#219 owner）**：`group_admin_admins_by_group` 可在插件配置里直接给每个群填名单，格式 `{"群号": ["QQ1","QQ2"]}`（值也支持 `"10001,10002"` 这种写法）。生效优先级：**群内指令维护的名单 > `group_admin_admins_by_group` 该群名单 > 全局 `group_admin_admins`**（命中即替换，不与上层合并）。群内 `/status` 可查看本群实际生效的名单。
-
-> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需向非群管理员用户授予设管理权限，使用 `group_admin_admins` 列表。
+> 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需向非群管理员用户授予设管理权限，使用 `group_admin_admins_by_group`（或群内 `/添加管理管理`）。
 
 ---
 
