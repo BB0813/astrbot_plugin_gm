@@ -120,6 +120,13 @@
         "hint": "在名单中的 QQ 可执行 /设管理 与 /取消管理，不受群管理身份限制。全局默认，按群覆盖优先级更高：/设置群配置 group_admin_admins [\"12345\"]。",
         "default": []
     },
+    "group_admin_admins_by_group": {
+        "description": "按群设置「可设置/取消群管理」的专项管理员（{群号: [QQ...]}）",
+        "type": "dict",
+        "items": {},
+        "hint": "示例：{\"123456789\": [\"10001\", \"10002\"]}。命中本表的群用该群名单（替换全局 group_admin_admins），未命中的群用全局名单；群内 /添加管理管理 /删除管理管理 维护的名单优先级更高。值可以是 JSON 数组，也可写成 \"10001,10002\"。查看某群实际生效名单：群内 /status。",
+        "default": {}
+    },
     "group_overrides": {
         "description": "按群独立配置覆盖：{群号: {key: value}}",
         "type": "dict",

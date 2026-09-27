@@ -162,6 +162,9 @@ class GroupAdminPlugin(Star):
             # 按操作类型分别配置管理员（#34 权限系统重构）
             "title_admins": [],
             "group_admin_admins": [],
+            # 按群设置「设管理」专项管理员（{群号: [QQ...]}，WebUI 可编辑；
+            # 优先级：群内指令写入的 group_overrides > 本表 > 全局 group_admin_admins）
+            "group_admin_admins_by_group": {},
             "kick_admins": [],
             # 关键词自动撤回（#46）
             "auto_recall_keywords": [],
@@ -424,10 +427,56 @@ class GroupAdminPlugin(Star):
             return True
         return False
 
+    def _normalize_qq_list_value(self, value) -> list:
+        """把 WebUI / 配置里各种写法的名单值归一化为 QQ 字符串列表。
+
+        兼容：list（正常）、JSON 数组字符串（WebUI dict 编辑器里填 ["10001"]）、
+        逗号/空格/顿号分隔的数字串（10001,10002），以及单个 QQ 号。
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return [str(x).strip() for x in value if str(x).strip()]
+        text = str(value).strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+            if isinstance(parsed, (str, int)):
+                text = str(parsed)
+        except (ValueError, TypeError):
+            pass
+        return _parse_qq_list(text)
+
+    def _effective_group_admin_admins(self, group_id: str) -> list:
+        """本群生效的「设管理」专项名单（#219 owner 要求：可像 group_overrides 一样按群覆盖）。
+
+        优先级：
+        1. group_overrides[群号]["group_admin_admins"]（群内 /添加管理管理 等指令维护）
+        2. group_admin_admins_by_group[群号]（WebUI 按群名单，新增）
+        3. group_admin_admins（WebUI 全局名单）
+        命中即替换（不与上层合并），与插件既有「按群覆盖 > 全局」语义一致。
+        """
+        ov = self.config.get("group_overrides", {}).get(str(group_id), {}).get("group_admin_admins")
+        ov_list = self._normalize_qq_list_value(ov)
+        if ov_list:
+            return ov_list
+        by_group = self.config.get("group_admin_admins_by_group", {}) or {}
+        if isinstance(by_group, dict):
+            g_list = self._normalize_qq_list_value(by_group.get(str(group_id)))
+            if g_list:
+                return g_list
+        return self._normalize_qq_list_value(self.config.get("group_admin_admins"))
+
     def has_group_admin_rights(self, user_id: str, group_id: str, raw: dict) -> bool:
+        """设管理/取消管理权限：设管理专项名单或插件管理员（群管理员/群主）。
+
+        专项名单来源见 _effective_group_admin_admins（群内指令 > WebUI 按群名单 > WebUI 全局名单）。
+        """
         uid = str(user_id)
-        ga_admins = [str(x) for x in self.get_group_setting(group_id, "group_admin_admins", [])]
-        if uid in ga_admins:
+        if uid in self._effective_group_admin_admins(group_id):
             return True
         if self._is_group_admin_or_owner(raw):
             return True
@@ -4139,7 +4188,7 @@ class GroupAdminPlugin(Star):
             overrides = self.config.get("group_overrides", {}).get(group_id, {})
             lines.extend([
                 f"本群 title_admins: {', '.join(map(str, self.get_group_setting(group_id, 'title_admins', []))) or '空'}",
-                f"本群 group_admin_admins: {', '.join(map(str, self.get_group_setting(group_id, 'group_admin_admins', []))) or '空'}",
+                f"本群 group_admin_admins: {', '.join(self._effective_group_admin_admins(group_id)) or '空'}",
                 f"本群 kick_admins: {', '.join(map(str, self.get_group_setting(group_id, 'kick_admins', []))) or '空'}",
                 f"本群 mute_kick_threshold: {self.get_group_setting(group_id, 'mute_kick_threshold', 0)}"
                 f"{'（按群覆盖）' if 'mute_kick_threshold' in overrides else '（全局默认）'}",

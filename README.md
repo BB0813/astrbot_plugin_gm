@@ -209,6 +209,7 @@ pip install astrbot_plugin_group_admin
 | `profanity_severity_enabled` | bool | `true` | AI 判骂人分级禁言开关（#243；关闭后一律按 `profanity_ban_duration` 固定时长；可按群覆盖） |
 | `profanity_ban_duration_severity` | dict | `{"mild":180,"medium":600,"severe":1800}` | AI 判骂人按严重程度分级禁言时长（秒，#243；模型未返回/返回非法时回退 `profanity_ban_duration`；可按群覆盖） |
 | `group_admin_admins` | list | `[]` | 可设置/取消群管理的专项管理员 QQ 列表（全局默认；按群覆盖优先级更高） |
+| `group_admin_admins_by_group` | dict | `{}` | **按群设置**可设置/取消群管理的专项管理员：`{"群号": ["QQ1","QQ2"]}`（命中该群用本群名单并替换全局名单；群内 `/添加管理管理` 优先级更高；值也可写 `"10001,10002"`） |
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
@@ -354,6 +355,8 @@ pip install astrbot_plugin_group_admin
 2. **专项权限管理员**：`group_admin_admins`（可设/取消群管理）等专项权限列表中的人，仅对相应操作生效（不受群管理身份限制）。`title_admins`、`kick_admins` 不再提供 WebUI 全局配置项（#188），仍支持按群覆盖（在 `group_overrides` 中配置 `title_admins` / `kick_admins` 列表）。
 
 `group_admin_admins` 支持 **全局配置**（在插件配置 / WebUI 面板中设置，作为默认值）与 **按群覆盖**（`group_overrides`，优先级更高）。
+
+**按群设置名单（WebUI，#219 owner）**：`group_admin_admins_by_group` 可在插件配置里直接给每个群填名单，格式 `{"群号": ["QQ1","QQ2"]}`（值也支持 `"10001,10002"` 这种写法）。生效优先级：**群内指令维护的名单 > `group_admin_admins_by_group` 该群名单 > 全局 `group_admin_admins`**（命中即替换，不与上层合并）。群内 `/status` 可查看本群实际生效的名单。
 
 > 插件管理员身份完全由 QQ 群管理员 / 群主自动识别，不再提供 `plugin_admins` 配置项与 `/设管` `/取管` 命令。如需专项权限授予非群管理员用户，使用对应专项权限列表。
 
