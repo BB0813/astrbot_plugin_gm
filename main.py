@@ -411,7 +411,9 @@ class GroupAdminPlugin(Star):
         3. group_admin_admins（WebUI 全局名单）
         命中即替换（不与上层合并），与插件既有「按群覆盖 > 全局」语义一致。
         """
-        ov = self.config.get("group_overrides", {}).get(str(group_id), {}).get("group_admin_admins")
+        # 注意：group_overrides 已迁移到 runtime.json，#219 上游实现仍读框架配置会永远取不到
+        # 群内指令写入的名单，故这里统一改走运行时映射（与 set_group_setting 写入侧一致）。
+        ov = self._runtime_map("group_overrides").get(str(group_id), {}).get("group_admin_admins")
         ov_list = self._normalize_qq_list_value(ov)
         if ov_list:
             return ov_list
