@@ -4473,10 +4473,15 @@ class GroupAdminPlugin(Star):
         return t.replace(" @ ", " ")
 
     def _detect_colloquial_intent(self, text: str):
-        """从口语化文本识别意图：mute/kick/admin。无命中返回 None。"""
+        """从口语化文本识别意图：mute/unmute/kick/admin/unadmin。无命中返回 None。"""
         if not text:
             return None
-        # 优先级：设管理 > 禁言 > 踢人（避免「给管理」中的字误判）
+        # 精度优先：先识别「取消/解除」类，再识别「设置/禁言」类，避免被正向词覆盖
+        if re.search(r"解除.{0,3}禁言|解禁|取消.{0,3}禁言|撤销.{0,3}禁言|别禁言|解封", text):
+            return "unmute"
+        if re.search(r"取消.{0,3}管理|撤(?:销|掉|除|下)?管理|下管理|卸任管理|去掉.{0,3}管理", text):
+            return "unadmin"
+        # 正向：设管理 > 禁言 > 踢人（避免「给管理」中的字误判）
         if re.search(r"设(?:为|成|置)?(?:群)?管理|上管理|给.{0,4}管理|加管理|升管理", text):
             return "admin"
         if re.search(r"禁言|闭嘴|封口|静音|沉默", text):
@@ -4492,6 +4497,11 @@ class GroupAdminPlugin(Star):
         未命中或不适用返回 False，让消息走原有流程。
         """
         if not group_id:
+            return False
+        # 口语化总开关（全局配置 + 按群覆盖 group_overrides）
+        if not self.get_group_setting(
+            group_id, "colloquial_enabled", self.config.get("colloquial_enabled", True)
+        ):
             return False
         self_id = self._get_self_id(event, raw)
         if not self_id or not self._message_at_bot(raw, self_id):
@@ -4531,6 +4541,14 @@ class GroupAdminPlugin(Star):
                 await self._send(event, self._build_text(msg))
             return True
 
+        if intent == "unmute":
+            ok = await self._unmute_member(event, group_id, target)
+            msg = f"已解除 {target} 的禁言" if ok else \
+                f"解除 {target} 禁言失败（请确认 bot 有管理员权限，且对方当前处于禁言状态）"
+            if self._should_notify_mute(group_id, ok):
+                await self._send(event, self._build_text(msg))
+            return True
+
         if intent == "kick":
             recalled = 0
             if self.get_group_setting(group_id, "kick_recall_enabled", False):
@@ -4543,6 +4561,16 @@ class GroupAdminPlugin(Star):
             msg = f"已踢出 {target}" if ok else f"踢出 {target} 失败（请确认 bot 有管理员权限，且对方不是群主）"
             if recalled:
                 msg += f"\n已撤回其近期消息 {recalled} 条"
+            await self._send(event, self._build_text(msg))
+            return True
+
+        if intent == "unadmin":
+            if not self.has_group_admin_rights(user_id, group_id, raw):
+                await self._send(event, self._build_text("只有插件管理员或群管理员可取消群管理"))
+                return True
+            ok = await self._set_group_admin(event, group_id, target, False)
+            msg = f"已取消 {target} 的群管理" if ok else \
+                f"取消 {target} 群管理失败（请确认 bot 有管理员权限，且对方当前是群管理员）"
             await self._send(event, self._build_text(msg))
             return True
 

@@ -11,6 +11,12 @@
         "hint": "推荐按群覆盖。",
         "default": true
     },
+    "colloquial_enabled": {
+        "description": "启用口语化群管指令（#254）",
+        "type": "bool",
+        "hint": "开启后，在群内 @机器人 并用自然语言即可触发禁言/解禁/踢人/设管理/取消管理，例如「@bot 把小明禁言10分钟」。关闭后仅识别带 / 前缀的标准命令。可按群覆盖。",
+        "default": true
+    },
     "group_name_notice": {
         "description": "修改群名成功后是否群内通知",
         "type": "bool",
