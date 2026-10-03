@@ -57,6 +57,172 @@ def _parse_qq_list(text: str) -> list:
     return list({m.group(1) for m in re.finditer(r"(\d{5,12})", text or "")})
 
 
+# #254：禁用/踢人/设管理口语化指令所需的时长解析与语义常量
+_CN_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "壹": 1, "二": 2, "两": 2, "俩": 2, "贰": 2,
+    "三": 3, "叁": 3, "四": 4, "肆": 4, "五": 5, "伍": 5, "六": 6, "陆": 6,
+    "七": 7, "柒": 7, "八": 8, "捌": 8, "九": 9, "玖": 9,
+}
+_CN_UNITS = {"十": 10, "拾": 10, "百": 100, "佰": 100, "千": 1000, "仟": 1000}
+# 「永久 / 无限 / 最大」等口语说法统一换算为 29 天 23 小时 59 分（OneBot 上限内）
+_MUTE_MAX_MINUTES = 29 * 24 * 60 + 23 * 60 + 59  # 43199
+# 单次禁言允许的分钟范围（避免 999999 直传 OneBot）
+_MUTE_MIN_MINUTES = 1
+_MUTE_CLAMP_MAX_MINUTES = 43200  # 30 天
+
+
+def _cn_number_to_int(s: str):
+    """把中文数字（支持 两/廿/十/十五/一百二十三）转为整数，失败返回 None。"""
+    if not s:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+
+    def _decode_chunk(chunk: str):
+        """解析一段（不含「万」）中文数字，如 一百二十三。"""
+        section = 0
+        number = 0
+        for ch in chunk:
+            if ch in _CN_DIGITS:
+                number = _CN_DIGITS[ch]
+            elif ch in _CN_UNITS:
+                unit = _CN_UNITS[ch]
+                if number == 0:
+                    number = 1  # 「十五」= 15
+                section += number * unit
+                number = 0
+            else:
+                return None
+        return section + number
+
+    if "万" in s:
+        left, _, right = s.partition("万")
+        left_val = 1 if left == "" else _decode_chunk(left)
+        if left_val is None:
+            return None
+        right_val = _decode_chunk(right)
+        if right_val is None:
+            return None
+        return left_val * 10000 + right_val
+    return _decode_chunk(s)
+
+
+def _parse_duration_minutes(text: str):
+    """#254：从文本解析口语化中文时长，统一换算为分钟。
+
+    覆盖阿拉伯数字与中文数字混用、分钟/小时/天/周/月、半小时、一个半小时、
+    两小时、一天、永久/无限等常见说法。返回 int（分钟）或 None（未识别）。
+    """
+    if not text:
+        return None
+    t = re.sub(r"\s+", "", str(text))
+    if not t:
+        return None
+
+    # 1) 永久 / 无限 / 最大值 / 31 天等：按 OneBot 上限长期禁言
+    if re.search(r"永久|无限|永远|一辈子|最大(?:值|时长)?|31天|三十一天", t):
+        return _MUTE_MAX_MINUTES
+
+    def _val(token: str):
+        token = (token or "").strip()
+        if not token:
+            return None
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            return float(token)
+        return _cn_number_to_int(token)
+
+    n = r"(\d+(?:\.\d+)?)"
+    c = r"([零〇一壹二两俩贰三叁四肆五伍六陆七柒八捌九玖十拾百佰千仟]+)"
+    num = rf"(?:{n}|{c})"
+
+    def _first_or_cn(match) -> str:
+        """兼容两个捕获组（阿拉伯数字 / 中文数字），返回命中的那一个。"""
+        return match.group(1) if match.group(1) is not None else match.group(2)
+
+    total_minutes = 0.0
+    matched = False
+
+    # 2) 「一个/半个/两个 小时」口语小时表达
+    for m in re.finditer(r"([一二两俩半])个(?:小时|钟头|時)", t):
+        matched = True
+        token = m.group(1)
+        total_minutes += 30 if token == "半" else 60 * (_val(token) or 0)
+    t = re.sub(r"[一二两俩半]个(?:小时|钟头|時)", " ", t)
+
+    # 3) 「一个小时」「两个半小时」等 X 个半小时口语表达（先于裸「半小时」匹配）
+    for m in re.finditer(r"([一二两俩])个(?:半(?:小时|钟头|時)|半个钟头)", t):
+        matched = True
+        total_minutes += ((_val(m.group(1)) or 0) + 0.5) * 60
+    t = re.sub(r"[一二两俩]个(?:半(?:小时|钟头|時)|半个钟头)", " ", t)
+
+    # 4) 「半小时」「半钟头」「半天」等半/整量词
+    half_map = [
+        (r"半小时|半个钟头|半個小時", 30),
+        (r"半天", 12 * 60),
+        (r"半周|半星期|半礼拜", 3 * 24 * 60 + 12 * 60),
+        (r"半月|半个月", 15 * 24 * 60),
+    ]
+    for pattern, minutes in half_map:
+        if re.search(pattern, t):
+            matched = True
+            total_minutes += minutes
+            t = re.sub(pattern, " ", t)
+
+    # 4) 数值 + 单位（月/周/天/小时/分钟），支持 2小时30分 累加
+    unit_specs = [
+        (r"(?:个月|月|各月)", 30 * 24 * 60),
+        (r"(?:星期|礼拜|周)", 7 * 24 * 60),
+        (r"(?:天|日)", 24 * 60),
+        (r"(?:小时|钟头|時|个点|个钟)", 60),
+        (r"(?:分钟|分|min|m)", 1),
+    ]
+    for unit_pattern, minutes_per in unit_specs:
+        pattern = rf"{num}{unit_pattern}"
+        for m in list(re.finditer(pattern, t, flags=re.IGNORECASE)):
+            value = _val(_first_or_cn(m))
+            if value is None:
+                continue
+            matched = True
+            total_minutes += value * minutes_per
+        t = re.sub(pattern, " ", t, flags=re.IGNORECASE)
+
+    # 5) 英文缩写小时/天（h/d），放在分钟（m）之后避免误吞
+    for unit_pattern, minutes_per in ((r"h", 60), (r"d", 24 * 60)):
+        pattern = rf"(\d+(?:\.\d+)?){unit_pattern}"
+        for m in list(re.finditer(pattern, t, flags=re.IGNORECASE)):
+            matched = True
+            total_minutes += float(m.group(1)) * minutes_per
+        t = re.sub(pattern, " ", t, flags=re.IGNORECASE)
+
+    if not matched:
+        return None
+    minutes = int(round(total_minutes))
+    if minutes <= 0:
+        return None
+    return minutes
+
+
+def _format_minutes(minutes: int) -> str:
+    """#254：把分钟数格式化为易读中文（用于口语化禁言的提示）。"""
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return f"{minutes}分钟"
+    if minutes <= 0:
+        return "0分钟"
+    days, rem = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}天")
+    if hours:
+        parts.append(f"{hours}小时")
+    if mins or not parts:
+        parts.append(f"{mins}分钟")
+    return "".join(parts)
+
+
 @register(
     "group_admin",
     "YourName",
@@ -2757,12 +2923,21 @@ class GroupAdminPlugin(Star):
         if not qq:
             yield event.plain_result("请指定要禁言的QQ号")
             return
-        target_stripped = (target or "").strip()
-        if target_stripped.isdigit():
-            try:
-                minutes = int(target_stripped)
-            except ValueError:
-                pass
+        # #254：支持从整条消息解析时长（含中文时长），/禁言 @某人 30 与
+        # /禁言 @某人 30分钟 / /禁言 @某人 半小时 均得到对应分钟数；解析失败回落默认 10。
+        dur_text = self._extract_command_tail(self._extract_text(raw), ("禁言",)) or (target or "")
+        dur_text = re.sub(r"@\d+", " ", dur_text)
+        parsed = _parse_duration_minutes(dur_text)
+        if parsed is not None:
+            minutes = parsed
+        else:
+            target_stripped = (target or "").strip()
+            if target_stripped.isdigit():
+                try:
+                    minutes = int(target_stripped)
+                except ValueError:
+                    pass
+        minutes = max(_MUTE_MIN_MINUTES, min(int(minutes), _MUTE_CLAMP_MAX_MINUTES))
         ok = await self._mute_member(event, group_id, qq, minutes * 60)
         if ok:
             await self._record_mute_and_maybe_kick(event, group_id, qq, sender_id)
@@ -4194,6 +4369,222 @@ class GroupAdminPlugin(Star):
         self._set_group_override(gid, "dup_face_recall_enabled", enabled)
         yield event.plain_result(f"[成功] 本群重复表情包撤回已{'开启' if enabled else '关闭'}")
 
+    # ===================== #254 口语化群管指令 =====================
+
+    def _message_at_bot(self, raw: dict, self_id: str) -> bool:
+        """判断消息中是否 @ 了 bot 自身。"""
+        if not raw or not self_id:
+            return False
+        for seg in raw.get("message", []) or []:
+            if isinstance(seg, dict) and seg.get("type") == "at":
+                if str(seg.get("data", {}).get("qq", "")) == str(self_id):
+                    return True
+        return False
+
+    def _extract_message_text_with_mentions(self, raw: dict, skip_qq: str = "") -> str:
+        """提取文本，把 @ 段替换为可见「@名字」便于口语化匹配；跳过 bot 自身提及。
+
+        OneBot 的 @ 段没有 QQ 号时（如复制文字里的 @张三），data.qq 可能缺失，
+        统一折成 "@名字" 文本参与「@他/@张三」等目标判断。
+        """
+        parts = []
+        for seg in raw.get("message", []) or []:
+            if not isinstance(seg, dict):
+                continue
+            stype = seg.get("type")
+            data = seg.get("data") or {}
+            if stype == "text":
+                parts.append(str(data.get("text", "")))
+            elif stype == "at":
+                qq = str(data.get("qq", "") or "")
+                if skip_qq and qq == str(skip_qq):
+                    continue  # 跳过 @bot 自身，避免污染意图词
+                name = data.get("name") or qq or ""
+                parts.append(f" @{name} " if name else " @ ")
+        return "".join(parts)
+
+    def _resolve_text_target_by_name(self, raw: dict, text: str):
+        """从文本里的「@名字 / 名字」匹配本群成员 QQ（需 @ 段带 name）。未找到返回 None。"""
+        targets = self._extract_at_targets(raw)
+        if not targets:
+            return None
+        # 优先匹配 @名字
+        for name, qq in targets.items():
+            if name and qq and name in text:
+                return qq
+        return None
+
+    async def _resolve_quoted_target(self, event, raw: dict) -> str:
+        """回复消息时取被回复消息发送者的 QQ；取不到返回空串。"""
+        reply_id = self._get_reply_id(event)
+        if not reply_id:
+            return ""
+        try:
+            ok, res = await self._call_action_fallback(event, ("get_msg",), message_id=int(reply_id))
+        except Exception:
+            return ""
+        if not ok or not isinstance(res, dict):
+            return ""
+        data = res.get("data") if isinstance(res.get("data"), dict) else res
+        if isinstance(data, dict):
+            sender = data.get("sender") or {}
+            qq = sender.get("user_id") or data.get("user_id")
+            if qq:
+                return str(qq)
+        return ""
+
+    def _extract_at_targets(self, raw: dict) -> dict:
+        """提取消息中的 @ 目标映射 {名称或QQ: QQ}。"""
+        targets = {}
+        for seg in raw.get("message", []) or []:
+            if isinstance(seg, dict) and seg.get("type") == "at":
+                data = seg.get("data") or {}
+                qq = str(data.get("qq", "") or "")
+                name = str(data.get("name", "") or "")
+                if qq:
+                    targets[name or qq] = qq
+        return targets
+
+    async def _resolve_colloquial_target(self, event, raw: dict, text: str) -> str:
+        """口语化指令的目标解析：@提及 > 回复消息 > 群内 QQ 号 > @名字。"""
+        # 1) @ 提及（排除 bot 自身）
+        self_id = self._get_self_id(event, raw)
+        ats = [q for q in self._extract_at_qqs(raw) if str(q) != str(self_id)]
+        if ats:
+            return str(ats[0])
+        # 2) 回复消息
+        quoted = await self._resolve_quoted_target(event, raw)
+        if quoted:
+            return quoted
+        # 3) 文本中的 QQ 号（5-12 位）
+        nums = _parse_qq_list(self._strip_mention_tokens(text))
+        if nums:
+            return nums[0]
+        # 4) @名字 文本
+        by_name = self._resolve_text_target_by_name(raw, text)
+        if by_name:
+            return by_name
+        return ""
+
+    @staticmethod
+    def _strip_mention_tokens(text: str) -> str:
+        """去掉 @名字/@ 占位，避免名字里的数字被当作 QQ 号。"""
+        t = re.sub(r"@\S+", " ", text or "")
+        return t.replace(" @ ", " ")
+
+    def _detect_colloquial_intent(self, text: str):
+        """从口语化文本识别意图：mute/unmute/kick/admin/unadmin。无命中返回 None。"""
+        if not text:
+            return None
+        # 精度优先：先识别「取消/解除」类，再识别「设置/禁言」类，避免被正向词覆盖
+        if re.search(r"解除.{0,3}禁言|解禁|取消.{0,3}禁言|撤销.{0,3}禁言|别禁言|解封|unban|解ban", text, re.IGNORECASE):
+            return "unmute"
+        if re.search(r"取消.{0,3}管理|撤(?:销|掉|除|下)?管理|下管理|卸任管理|去掉.{0,3}管理", text):
+            return "unadmin"
+        # 正向：设管理 > 禁言 > 踢人（避免「给管理」中的字误判）
+        if re.search(r"设(?:为|成|置)?(?:群)?管理|上管理|给.{0,4}管理|加管理|升管理", text):
+            return "admin"
+        # ban 为常见网络用语，用前后非英文字母边界避免误命中 banana/urban 等
+        if re.search(r"禁言|闭嘴|封口|静音|沉默|封禁|(?<![a-zA-Z])ban(?![a-zA-Z])", text, re.IGNORECASE):
+            return "mute"
+        if re.search(r"踢|移出群|清出群", text):
+            return "kick"
+        return None
+
+    async def _handle_colloquial_admin_request(self, event: AstrMessageEvent, raw: dict, group_id: str, user_id: str) -> bool:
+        """#254：处理 @bot + 口语化禁言/踢人/设管理请求。
+
+        命中并已回复返回 True（调用方 return，避免重复计数与历史污染）；
+        未命中或不适用返回 False，让消息走原有流程。
+        """
+        if not group_id:
+            return False
+        # 口语化总开关（全局配置 + 按群覆盖 group_overrides）
+        if not self.get_group_setting(
+            group_id, "colloquial_enabled", self.config.get("colloquial_enabled", True)
+        ):
+            return False
+        self_id = self._get_self_id(event, raw)
+        if not self_id or not self._message_at_bot(raw, self_id):
+            return False
+
+        # 提取口语文本（跳过 @bot 自身，保留 @目标 段用于目标解析）
+        text = self._extract_message_text_with_mentions(raw, skip_qq=self_id)
+        intent = self._detect_colloquial_intent(text)
+        if not intent:
+            return False
+
+        # 权限校验：非插件管理员直接拒绝（与命令语义一致）
+        if not self._is_authorized(raw, user_id):
+            await self._send(event, self._build_text("只有插件管理员或群管理员可执行此操作"))
+            return True
+
+        target = await self._resolve_colloquial_target(event, raw, text)
+        if not target:
+            await self._send(event, self._build_text(
+                "没有找到要操作的目标，请 @ 某人、回复他的消息，或直接给出 QQ 号"))
+            return True
+        if str(target) == str(self_id):
+            await self._send(event, self._build_text("不能对自己执行该操作"))
+            return True
+
+        if intent == "mute":
+            parsed = _parse_duration_minutes(text)
+            if parsed is None:
+                parsed = 10  # 缺省 10 分钟
+            minutes = max(_MUTE_MIN_MINUTES, min(int(parsed), _MUTE_CLAMP_MAX_MINUTES))
+            ok = await self._mute_member(event, group_id, target, minutes * 60)
+            if ok:
+                await self._record_mute_and_maybe_kick(event, group_id, target, user_id)
+            msg = f"已禁言 {target} {_format_minutes(minutes)}" if ok else \
+                f"禁言 {target} 失败（请确认 bot 有管理员权限且对方不是群主/管理员）"
+            if self._should_notify_mute(group_id, ok):
+                await self._send(event, self._build_text(msg))
+            return True
+
+        if intent == "unmute":
+            ok = await self._unmute_member(event, group_id, target)
+            msg = f"已解除 {target} 的禁言" if ok else \
+                f"解除 {target} 禁言失败（请确认 bot 有管理员权限，且对方当前处于禁言状态）"
+            if self._should_notify_mute(group_id, ok):
+                await self._send(event, self._build_text(msg))
+            return True
+
+        if intent == "kick":
+            recalled = 0
+            if self.get_group_setting(group_id, "kick_recall_enabled", False):
+                recalled = await self._recall_user_recent_msgs(
+                    event, group_id, target,
+                    max(1, min(int(self.get_group_setting(group_id, "kick_recall_count", 10) or 10), 50)))
+            ok = await self._kick_member(event, group_id, target)
+            if ok and self.config.get("reject_re_add", False):
+                await self._execute_action(event, "reject_add", group_id=group_id, user_id=target)
+            msg = f"已踢出 {target}" if ok else f"踢出 {target} 失败（请确认 bot 有管理员权限，且对方不是群主）"
+            if recalled:
+                msg += f"\n已撤回其近期消息 {recalled} 条"
+            await self._send(event, self._build_text(msg))
+            return True
+
+        if intent == "unadmin":
+            if not self.has_group_admin_rights(user_id, group_id, raw):
+                await self._send(event, self._build_text("只有插件管理员或群管理员可取消群管理"))
+                return True
+            ok = await self._set_group_admin(event, group_id, target, False)
+            msg = f"已取消 {target} 的群管理" if ok else \
+                f"取消 {target} 群管理失败（请确认 bot 有管理员权限，且对方当前是群管理员）"
+            await self._send(event, self._build_text(msg))
+            return True
+
+        # intent == "admin"
+        if not self.has_group_admin_rights(user_id, group_id, raw):
+            await self._send(event, self._build_text("只有插件管理员或群管理员可授予群管理"))
+            return True
+        ok = await self._set_group_admin(event, group_id, target, True)
+        msg = f"已将 {target} 设为群管理" if ok else \
+            f"设置 {target} 为群管理失败（请确认 bot 有管理员权限，且对方不是群主）"
+        await self._send(event, self._build_text(msg))
+        return True
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """监听群消息：发言计数 + 违规检测。"""
@@ -4206,6 +4597,10 @@ class GroupAdminPlugin(Star):
         user_id = str(raw.get("user_id"))
         # 跳过 bot 自身
         if str(raw.get("self_id", "")) == user_id:
+            return
+
+        # #254：@bot + 口语化群管请求优先处理，命中即返回（避免重复计数/历史污染）
+        if await self._handle_colloquial_admin_request(event, raw, group_id, user_id):
             return
 
         # 发言计数（#29）
