@@ -4477,14 +4477,15 @@ class GroupAdminPlugin(Star):
         if not text:
             return None
         # 精度优先：先识别「取消/解除」类，再识别「设置/禁言」类，避免被正向词覆盖
-        if re.search(r"解除.{0,3}禁言|解禁|取消.{0,3}禁言|撤销.{0,3}禁言|别禁言|解封", text):
+        if re.search(r"解除.{0,3}禁言|解禁|取消.{0,3}禁言|撤销.{0,3}禁言|别禁言|解封|unban|解ban", text, re.IGNORECASE):
             return "unmute"
         if re.search(r"取消.{0,3}管理|撤(?:销|掉|除|下)?管理|下管理|卸任管理|去掉.{0,3}管理", text):
             return "unadmin"
         # 正向：设管理 > 禁言 > 踢人（避免「给管理」中的字误判）
         if re.search(r"设(?:为|成|置)?(?:群)?管理|上管理|给.{0,4}管理|加管理|升管理", text):
             return "admin"
-        if re.search(r"禁言|闭嘴|封口|静音|沉默", text):
+        # ban 为常见网络用语，用前后非英文字母边界避免误命中 banana/urban 等
+        if re.search(r"禁言|闭嘴|封口|静音|沉默|封禁|(?<![a-zA-Z])ban(?![a-zA-Z])", text, re.IGNORECASE):
             return "mute"
         if re.search(r"踢|移出群|清出群", text):
             return "kick"
